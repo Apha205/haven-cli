@@ -19,6 +19,8 @@ from textual.coordinate import Coordinate
 from haven_tui.core.state_manager import StateManager, VideoState
 from haven_tui.config import HavenTUIConfig
 from haven_tui.models.video_view import PipelineStage
+from haven_tui.ui.components.speed_graph import SpeedGraphComponent
+from haven_tui.data.repositories import SpeedHistoryRepository
 
 
 @dataclass
@@ -443,11 +445,35 @@ class VideoListFooter(Static):
     }
     """
     
+    def __init__(self, show_graph: bool = False, **kwargs: Any) -> None:
+        """Initialize the footer.
+        
+        Args:
+            show_graph: Whether the speed graph is currently visible
+            **kwargs: Additional arguments passed to Static
+        """
+        super().__init__(**kwargs)
+        self._show_graph = show_graph
+    
     def compose(self) -> None:
         """Set up the footer content."""
+        self._update_content()
+    
+    def set_show_graph(self, show_graph: bool) -> None:
+        """Update the graph visibility indicator.
+        
+        Args:
+            show_graph: Whether the speed graph is currently visible
+        """
+        self._show_graph = show_graph
+        self._update_content()
+    
+    def _update_content(self) -> None:
+        """Update the footer content."""
+        graph_indicator = "ON" if self._show_graph else "OFF"
         self.update(
-            "[q] Quit  [r] Refresh  [a] Auto-refresh  [d] Details  "
-            "[f] Filter  [s] Sort  [?] Help"
+            f"[q] Quit  [r] Refresh  [a] Auto-refresh  [d] Details  "
+            f"[g] Graph ({graph_indicator})  [f] Filter  [s] Sort  [?] Help"
         )
 
 
@@ -483,9 +509,26 @@ class VideoListScreen(Screen):
         dock: bottom;
     }
     
-    #list-container {
+    #main-content {
         height: 1fr;
         width: 100%;
+        layout: horizontal;
+    }
+    
+    #list-container {
+        height: 100%;
+        width: 1fr;
+    }
+    
+    #graph-container {
+        height: 100%;
+        width: 35;
+        dock: right;
+        display: none;
+    }
+    
+    #graph-container.visible {
+        display: block;
     }
     """
     
@@ -494,6 +537,7 @@ class VideoListScreen(Screen):
         ("r", "refresh", "Refresh"),
         ("a", "toggle_auto_refresh", "Auto-refresh"),
         ("d", "details", "Details"),
+        ("g", "toggle_graph", "Graph"),
         ("f", "filter", "Filter"),
         ("s", "sort", "Sort"),
         ("?", "help", "Help"),
@@ -501,12 +545,14 @@ class VideoListScreen(Screen):
     ]
     
     auto_refresh: reactive[bool] = reactive(True)
+    show_graph: reactive[bool] = reactive(False)
     
     def __init__(
         self,
         state_manager: Optional[StateManager] = None,
         config: Optional[HavenTUIConfig] = None,
         on_show_details: Optional[Callable[[int], None]] = None,
+        speed_history_repo: Optional[SpeedHistoryRepository] = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the video list screen.
@@ -515,14 +561,19 @@ class VideoListScreen(Screen):
             state_manager: The StateManager for accessing video state
             config: The TUI configuration
             on_show_details: Optional callback when user requests to view video details
+            speed_history_repo: Optional repository for speed history data
             **kwargs: Additional arguments passed to Screen
         """
         super().__init__(**kwargs)
         self.state_manager = state_manager
         self.config = config or HavenTUIConfig()
         self.auto_refresh = True
+        self.show_graph = config.display.show_speed_graphs if config else False
         self._refresh_timer: Optional[Any] = None
         self.on_show_details_callback = on_show_details
+        self._speed_history_repo = speed_history_repo
+        self._selected_video_id: Optional[int] = None
+        self._selected_stage: str = "download"
     
     def compose(self) -> None:
         """Compose the screen layout."""
@@ -530,16 +581,26 @@ class VideoListScreen(Screen):
             with Container(id="header-container"):
                 yield VideoListHeader(self.state_manager)
             
-            with Container(id="list-container"):
-                yield VideoListWidget(
-                    state_manager=self.state_manager,
-                    config=self.config,
-                    on_select=self._on_video_select,
-                    on_multi_select=self._on_multi_select,
-                )
+            with Container(id="main-content"):
+                with Container(id="list-container"):
+                    yield VideoListWidget(
+                        state_manager=self.state_manager,
+                        config=self.config,
+                        on_select=self._on_video_select,
+                        on_multi_select=self._on_multi_select,
+                    )
+                
+                with Container(id="graph-container", classes="visible" if self.show_graph else ""):
+                    yield SpeedGraphComponent(
+                        speed_history_repo=self._speed_history_repo,
+                        width=30,
+                        height=15,
+                        history_seconds=self.config.display.graph_history_seconds if self.config else 60,
+                        id="speed-graph",
+                    )
             
             with Container(id="footer-container"):
-                yield VideoListFooter()
+                yield VideoListFooter(show_graph=self.show_graph)
     
     def on_mount(self) -> None:
         """Handle mount event - start auto-refresh timer."""
@@ -574,6 +635,7 @@ class VideoListScreen(Screen):
         video_list = self.query_one(VideoListWidget)
         video_list.refresh_data()
         self._update_header()
+        self._update_speed_graph()
     
     def _update_header(self) -> None:
         """Update the header with current stats."""
@@ -586,7 +648,47 @@ class VideoListScreen(Screen):
         Args:
             video_id: The selected video ID
         """
-        self.app.notify(f"Selected video {video_id}", timeout=2.0)
+        self._selected_video_id = video_id
+        self._update_speed_graph()
+    
+    def _update_speed_graph(self) -> None:
+        """Update the speed graph with the selected video's data."""
+        if not self.show_graph or self._selected_video_id is None:
+            return
+        
+        try:
+            graph = self.query_one("#speed-graph", SpeedGraphComponent)
+            graph.set_video(self._selected_video_id, self._selected_stage)
+        except Exception:
+            pass  # Graph may not be mounted yet
+    
+    def action_toggle_graph(self) -> None:
+        """Toggle speed graph visibility with 'g' key."""
+        self.show_graph = not self.show_graph
+        
+        # Update graph container visibility
+        try:
+            graph_container = self.query_one("#graph-container")
+            if self.show_graph:
+                graph_container.add_class("visible")
+            else:
+                graph_container.remove_class("visible")
+        except Exception:
+            pass
+        
+        # Update footer to show graph state
+        try:
+            footer = self.query_one(VideoListFooter)
+            footer.set_show_graph(self.show_graph)
+        except Exception:
+            pass
+        
+        # Update graph if now visible and we have a selection
+        if self.show_graph and self._selected_video_id is not None:
+            self._update_speed_graph()
+        
+        status = "visible" if self.show_graph else "hidden"
+        self.app.notify(f"Speed graph {status}", timeout=1.5)
     
     def _on_multi_select(self, video_ids: List[int]) -> None:
         """Handle multi-selection change.
@@ -657,6 +759,7 @@ class VideoListScreen(Screen):
             "  r - Refresh data\n"
             "  a - Toggle auto-refresh\n"
             "  d - View details\n"
+            "  g - Toggle speed graph\n"
             "  f - Filter videos\n"
             "  s - Sort videos\n"
             "  Space - Select/deselect video\n"
@@ -685,6 +788,7 @@ class VideoListView:
         config: The HavenTUIConfig for display settings
         screen: The VideoListScreen instance
         on_show_details: Optional callback for showing video details
+        speed_history_repo: Optional repository for speed history data
     """
     
     def __init__(
@@ -692,6 +796,7 @@ class VideoListView:
         state_manager: StateManager,
         config: HavenTUIConfig,
         on_show_details: Optional[Callable[[int], None]] = None,
+        speed_history_repo: Optional[SpeedHistoryRepository] = None,
     ) -> None:
         """Initialize the video list view.
         
@@ -699,10 +804,12 @@ class VideoListView:
             state_manager: The StateManager for accessing video state
             config: The TUI configuration
             on_show_details: Optional callback when user requests to view video details
+            speed_history_repo: Optional repository for speed history data
         """
         self.state_manager = state_manager
         self.config = config
         self.on_show_details = on_show_details
+        self.speed_history_repo = speed_history_repo
         self.screen: Optional[VideoListScreen] = None
     
     def create_screen(self) -> VideoListScreen:
@@ -715,6 +822,7 @@ class VideoListView:
             state_manager=self.state_manager,
             config=self.config,
             on_show_details=self.on_show_details,
+            speed_history_repo=self.speed_history_repo,
         )
         return self.screen
     

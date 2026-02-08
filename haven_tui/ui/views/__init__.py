@@ -7,8 +7,11 @@ This package contains the main view components for the TUI:
 """
 
 from haven_tui.ui.views.video_list import VideoListView, VideoListScreen
+from haven_tui.ui.views.video_detail import VideoDetailView, VideoDetailScreen
 
 __all__ = [
     "VideoListView",
     "VideoListScreen",
+    "VideoDetailView",
+    "VideoDetailScreen",
 ]

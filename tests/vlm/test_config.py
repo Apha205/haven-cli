@@ -21,7 +21,6 @@ from haven_cli.vlm.config import (
     save_multiplexer_config,
     load_multiplexer_config,
     get_example_multiplexer_config,
-    _infer_model_type,
     _apply_env_overrides,
 )
 
@@ -33,26 +32,25 @@ class TestVLMEngineConfig:
         """Test default configuration values."""
         config = VLMEngineConfig()
         
-        assert config.model_type == "openai"
         assert config.model_name == "zai-org/glm-4.6v-flash"
         assert config.api_key is None
-        assert config.base_url is None
         assert config.timeout == 120.0
         assert config.max_tokens == 4096
+        assert config.max_concurrent == 5
     
     def test_custom_values(self):
         """Test custom configuration values."""
         config = VLMEngineConfig(
-            model_type="gemini",
-            model_name="gemini-pro-vision",
+            model_name="custom-model",
             api_key="test-key",
             timeout=60.0,
+            max_tokens=2048,
         )
         
-        assert config.model_type == "gemini"
-        assert config.model_name == "gemini-pro-vision"
+        assert config.model_name == "custom-model"
         assert config.api_key == "test-key"
         assert config.timeout == 60.0
+        assert config.max_tokens == 2048
 
 
 class TestVLMProcessingConfig:
@@ -88,56 +86,8 @@ class TestVLMMultiplexerEndpoint:
         assert config.api_key is None
 
 
-class TestInferModelType:
-    """Tests for model type inference."""
-    
-    def test_openai_models(self):
-        """Test inferring OpenAI models."""
-        assert _infer_model_type("gpt-4-vision-preview") == "openai"
-        assert _infer_model_type("gpt-4o") == "openai"
-        assert _infer_model_type("openai-gpt-4") == "openai"
-    
-    def test_gemini_models(self):
-        """Test inferring Gemini models."""
-        assert _infer_model_type("gemini-pro-vision") == "gemini"
-        assert _infer_model_type("gemini-1.5-flash") == "gemini"
-    
-    def test_claude_models(self):
-        """Test inferring Claude models."""
-        assert _infer_model_type("claude-3-opus") == "anthropic"
-    
-    def test_local_models(self):
-        """Test inferring local models."""
-        assert _infer_model_type("llava-v1.5") == "local"
-        assert _infer_model_type("local-llm") == "local"
-    
-    def test_unknown_models(self):
-        """Test default for unknown models."""
-        assert _infer_model_type("unknown-model") == "openai"
-
-
 class TestApplyEnvOverrides:
     """Tests for environment variable overrides."""
-    
-    def test_openai_api_key_override(self):
-        """Test OPENAI_API_KEY environment variable."""
-        config = VLMConfig()
-        config.engine.model_type = "openai"
-        
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-openai-key"}):
-            result = _apply_env_overrides(config)
-        
-        assert result.engine.api_key == "test-openai-key"
-    
-    def test_google_api_key_override(self):
-        """Test GOOGLE_API_KEY environment variable."""
-        config = VLMConfig()
-        config.engine.model_type = "gemini"
-        
-        with patch.dict(os.environ, {"GOOGLE_API_KEY": "test-google-key"}):
-            result = _apply_env_overrides(config)
-        
-        assert result.engine.api_key == "test-google-key"
     
     def test_vlm_api_key_override(self):
         """Test VLM_API_KEY environment variable."""
@@ -147,15 +97,6 @@ class TestApplyEnvOverrides:
             result = _apply_env_overrides(config)
         
         assert result.engine.api_key == "test-vlm-key"
-    
-    def test_base_url_override(self):
-        """Test VLM_BASE_URL environment variable."""
-        config = VLMConfig()
-        
-        with patch.dict(os.environ, {"VLM_BASE_URL": "http://custom:8000/v1"}):
-            result = _apply_env_overrides(config)
-        
-        assert result.engine.base_url == "http://custom:8000/v1"
     
     def test_frame_count_override(self):
         """Test VLM_FRAME_COUNT environment variable."""
@@ -184,6 +125,44 @@ class TestApplyEnvOverrides:
             result = _apply_env_overrides(config)
         
         assert result.processing.enabled is False
+    
+    def test_analysis_tags_override(self):
+        """Test VLM_ANALYSIS_TAGS environment variable."""
+        config = VLMConfig()
+        
+        with patch.dict(os.environ, {"VLM_ANALYSIS_TAGS": "cat,dog,bird"}):
+            result = _apply_env_overrides(config)
+        
+        assert result.analysis_tags == ["cat", "dog", "bird"]
+    
+    def test_detected_tag_confidence_override(self):
+        """Test VLM_DETECTED_TAG_CONFIDENCE environment variable."""
+        config = VLMConfig()
+        
+        with patch.dict(os.environ, {"VLM_DETECTED_TAG_CONFIDENCE": "0.95"}):
+            result = _apply_env_overrides(config)
+        
+        assert result.detected_tag_confidence == 0.95
+    
+    def test_multiplexer_enabled_override(self):
+        """Test VLM_MULTIPLEXER_ENABLED environment variable."""
+        config = VLMConfig()
+        config.multiplexer.enabled = False
+        
+        with patch.dict(os.environ, {"VLM_MULTIPLEXER_ENABLED": "true"}):
+            result = _apply_env_overrides(config)
+        
+        assert result.multiplexer.enabled is True
+    
+    def test_max_concurrent_requests_override(self):
+        """Test VLM_MAX_CONCURRENT_REQUESTS environment variable."""
+        config = VLMConfig()
+        
+        with patch.dict(os.environ, {"VLM_MAX_CONCURRENT_REQUESTS": "25"}):
+            result = _apply_env_overrides(config)
+        
+        assert result.multiplexer.max_concurrent_requests == 25
+        assert result.engine.max_concurrent == 25
 
 
 class TestLoadVlmConfig:
@@ -196,9 +175,22 @@ class TestLoadVlmConfig:
         mock_pipeline_config.vlm_model = "gpt-4-vision-preview"
         mock_pipeline_config.vlm_api_key = "test-key"
         mock_pipeline_config.vlm_timeout = 120.0
+        mock_pipeline_config.vlm_frame_interval = 2.0
+        mock_pipeline_config.vlm_threshold = 0.5
+        mock_pipeline_config.vlm_return_timestamps = True
+        mock_pipeline_config.vlm_return_confidence = True
+        mock_pipeline_config.vlm_max_new_tokens = 128
+        mock_pipeline_config.vlm_detected_tag_confidence = 0.99
+        mock_pipeline_config.vlm_analysis_tags = "person,car,bicycle"
+        mock_pipeline_config.vlm_multiplexer_enabled = True
+        mock_pipeline_config.vlm_multiplexer_endpoints = [
+            {"base_url": "http://localhost:1234/v1", "name": "local", "weight": 1, "max_concurrent": 5}
+        ]
+        mock_pipeline_config.vlm_max_concurrent_requests = 15
         
         mock_haven_config = MagicMock()
         mock_haven_config.pipeline = mock_pipeline_config
+        mock_haven_config.data_dir = "/tmp/haven"
         
         with patch("haven_cli.vlm.config.get_config", return_value=mock_haven_config):
             config = load_vlm_config()
@@ -206,22 +198,9 @@ class TestLoadVlmConfig:
         assert config.processing.enabled is True
         assert config.engine.model_name == "gpt-4-vision-preview"
         assert config.engine.api_key == "test-key"
-    
-    def test_load_config_with_gemini(self):
-        """Test loading configuration for Gemini model."""
-        mock_pipeline_config = MagicMock()
-        mock_pipeline_config.vlm_enabled = True
-        mock_pipeline_config.vlm_model = "gemini-pro-vision"
-        mock_pipeline_config.vlm_api_key = "test-key"
-        mock_pipeline_config.vlm_timeout = 120.0
-        
-        mock_haven_config = MagicMock()
-        mock_haven_config.pipeline = mock_pipeline_config
-        
-        with patch("haven_cli.vlm.config.get_config", return_value=mock_haven_config):
-            config = load_vlm_config()
-        
-        assert config.engine.model_type == "gemini"
+        assert config.multiplexer.enabled is True
+        assert len(config.multiplexer.endpoints) == 1
+        assert config.analysis_tags == ["person", "car", "bicycle"]
 
 
 class TestGetEngineConfig:
@@ -242,9 +221,20 @@ class TestGetEngineConfig:
         mock_pipeline_config.vlm_model = "gpt-4o"
         mock_pipeline_config.vlm_api_key = "key"
         mock_pipeline_config.vlm_timeout = 120.0
+        mock_pipeline_config.vlm_frame_interval = 2.0
+        mock_pipeline_config.vlm_threshold = 0.5
+        mock_pipeline_config.vlm_return_timestamps = True
+        mock_pipeline_config.vlm_return_confidence = True
+        mock_pipeline_config.vlm_max_new_tokens = 128
+        mock_pipeline_config.vlm_detected_tag_confidence = 0.99
+        mock_pipeline_config.vlm_analysis_tags = "person,car"
+        mock_pipeline_config.vlm_multiplexer_enabled = False
+        mock_pipeline_config.vlm_multiplexer_endpoints = []
+        mock_pipeline_config.vlm_max_concurrent_requests = 10
         
         mock_haven_config = MagicMock()
         mock_haven_config.pipeline = mock_pipeline_config
+        mock_haven_config.data_dir = "/tmp/haven"
         
         with patch("haven_cli.vlm.config.get_config", return_value=mock_haven_config):
             result = get_engine_config()
@@ -292,22 +282,10 @@ class TestValidateVlmConfig:
     def test_valid_config(self):
         """Test validation of valid configuration."""
         config = VLMConfig()
-        config.processing.enabled = False  # Disable to avoid API key warning
         
         errors = validate_vlm_config(config)
         
         assert errors == []
-    
-    def test_missing_api_key_warning(self):
-        """Test warning when API key missing."""
-        config = VLMConfig()
-        config.processing.enabled = True
-        config.engine.api_key = None
-        config.engine.model_type = "openai"
-        
-        errors = validate_vlm_config(config)
-        
-        assert any("API key" in e for e in errors)
     
     def test_invalid_frame_count(self):
         """Test validation of invalid frame count."""
@@ -345,6 +323,24 @@ class TestValidateVlmConfig:
         
         assert any("timeout" in e for e in errors)
     
+    def test_invalid_detected_tag_confidence(self):
+        """Test validation of invalid detected_tag_confidence."""
+        config = VLMConfig()
+        config.detected_tag_confidence = 1.5
+        
+        errors = validate_vlm_config(config)
+        
+        assert any("detected_tag_confidence" in e for e in errors)
+    
+    def test_empty_analysis_tags(self):
+        """Test validation with empty analysis tags."""
+        config = VLMConfig()
+        config.analysis_tags = []
+        
+        errors = validate_vlm_config(config)
+        
+        assert any("analysis_tags" in e for e in errors)
+    
     def test_multiplexer_no_endpoints(self):
         """Test validation of multiplexer without endpoints."""
         config = VLMConfig()
@@ -354,6 +350,42 @@ class TestValidateVlmConfig:
         errors = validate_vlm_config(config)
         
         assert any("endpoints" in e for e in errors)
+    
+    def test_multiplexer_invalid_endpoint_weight(self):
+        """Test validation of endpoint with invalid weight."""
+        config = VLMConfig()
+        config.multiplexer.enabled = True
+        config.multiplexer.endpoints = [
+            VLMMultiplexerEndpoint(base_url="http://test/v1", name="test", weight=0)
+        ]
+        
+        errors = validate_vlm_config(config)
+        
+        assert any("weight" in e for e in errors)
+    
+    def test_multiplexer_invalid_endpoint_max_concurrent(self):
+        """Test validation of endpoint with invalid max_concurrent."""
+        config = VLMConfig()
+        config.multiplexer.enabled = True
+        config.multiplexer.endpoints = [
+            VLMMultiplexerEndpoint(base_url="http://test/v1", name="test", max_concurrent=0)
+        ]
+        
+        errors = validate_vlm_config(config)
+        
+        assert any("max_concurrent" in e for e in errors)
+    
+    def test_multiplexer_missing_base_url(self):
+        """Test validation of endpoint without base_url."""
+        config = VLMConfig()
+        config.multiplexer.enabled = True
+        config.multiplexer.endpoints = [
+            VLMMultiplexerEndpoint(base_url="", name="test")
+        ]
+        
+        errors = validate_vlm_config(config)
+        
+        assert any("base_url" in e for e in errors)
 
 
 class TestMultiplexerConfig:

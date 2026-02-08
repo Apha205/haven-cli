@@ -506,6 +506,7 @@ class VideoListScreen(Screen):
         self,
         state_manager: Optional[StateManager] = None,
         config: Optional[HavenTUIConfig] = None,
+        on_show_details: Optional[Callable[[int], None]] = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the video list screen.
@@ -513,6 +514,7 @@ class VideoListScreen(Screen):
         Args:
             state_manager: The StateManager for accessing video state
             config: The TUI configuration
+            on_show_details: Optional callback when user requests to view video details
             **kwargs: Additional arguments passed to Screen
         """
         super().__init__(**kwargs)
@@ -520,6 +522,7 @@ class VideoListScreen(Screen):
         self.config = config or HavenTUIConfig()
         self.auto_refresh = True
         self._refresh_timer: Optional[Any] = None
+        self.on_show_details_callback = on_show_details
     
     def compose(self) -> None:
         """Compose the screen layout."""
@@ -610,9 +613,33 @@ class VideoListScreen(Screen):
         video_list = self.query_one(VideoListWidget)
         video_id = video_list.get_selected_video_id()
         if video_id:
-            self.app.notify(f"Details for video {video_id}", timeout=3.0)
+            self._show_video_details(video_id)
         else:
             self.app.notify("No video selected", severity="warning", timeout=2.0)
+    
+    def _show_video_details(self, video_id: int) -> None:
+        """Show details for a video.
+        
+        This method can be overridden or the on_show_details_callback
+        can be set to customize the navigation behavior.
+        
+        Args:
+            video_id: ID of the video to show details for
+        """
+        # Import here to avoid circular imports
+        from haven_tui.ui.views.video_detail import VideoDetailScreen
+        
+        # Check if there's a custom callback
+        if hasattr(self, 'on_show_details_callback') and self.on_show_details_callback:
+            self.on_show_details_callback(video_id)
+        else:
+            # Default behavior: show a notification that detail view is available
+            # The actual navigation should be handled by the app using the callback
+            self.app.notify(
+                f"Detail view for video {video_id} - "
+                "Use on_show_details_callback to customize navigation",
+                timeout=3.0
+            )
     
     def action_filter(self) -> None:
         """Open filter dialog."""
@@ -657,21 +684,25 @@ class VideoListView:
         state_manager: The StateManager for accessing video state
         config: The HavenTUIConfig for display settings
         screen: The VideoListScreen instance
+        on_show_details: Optional callback for showing video details
     """
     
     def __init__(
         self,
         state_manager: StateManager,
         config: HavenTUIConfig,
+        on_show_details: Optional[Callable[[int], None]] = None,
     ) -> None:
         """Initialize the video list view.
         
         Args:
             state_manager: The StateManager for accessing video state
             config: The TUI configuration
+            on_show_details: Optional callback when user requests to view video details
         """
         self.state_manager = state_manager
         self.config = config
+        self.on_show_details = on_show_details
         self.screen: Optional[VideoListScreen] = None
     
     def create_screen(self) -> VideoListScreen:
@@ -683,6 +714,7 @@ class VideoListView:
         self.screen = VideoListScreen(
             state_manager=self.state_manager,
             config=self.config,
+            on_show_details=self.on_show_details,
         )
         return self.screen
     

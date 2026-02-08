@@ -1,7 +1,7 @@
 """VLM configuration management for Haven CLI.
 
 This module provides configuration loading and management for VLM analysis,
-adapted from the backend VLM configuration system.
+matching the backend VLM configuration structure.
 """
 
 from __future__ import annotations
@@ -20,15 +20,13 @@ class VLMEngineConfig:
     """Configuration for a VLM engine.
     
     Attributes:
-        model_type: Type of model (openai, gemini, local)
-        model_name: Specific model identifier
-        api_key: API key for the service (deprecated: use multiplexer endpoints)
+        model_name: Specific model identifier (e.g., "zai-org/glm-4.6v-flash")
+        api_key: API key for the service (optional, can be set per endpoint)
         timeout: Request timeout in seconds
         max_tokens: Maximum tokens in response
         max_concurrent: Maximum concurrent requests
     """
     
-    model_type: str = "openai"
     model_name: str = "zai-org/glm-4.6v-flash"
     api_key: Optional[str] = None
     timeout: float = 120.0
@@ -63,15 +61,15 @@ class VLMProcessingConfig:
 class VLMMultiplexerEndpoint:
     """Configuration for a multiplexer endpoint.
     
-    Used for load balancing across multiple VLM servers.
+    Used for load balancing across multiple OpenAI-compatible VLM servers.
     
     Attributes:
-        base_url: Endpoint URL
+        base_url: Endpoint URL (e.g., "http://localhost:1234/v1")
         api_key: API key for this endpoint
         name: Human-readable name
         weight: Load balancing weight
         max_concurrent: Maximum concurrent requests for this endpoint
-        model_id: Model identifier to use for this endpoint (passed to multiplexer LLM config)
+        model_id: Model identifier to use for this endpoint
     """
     
     base_url: str
@@ -132,16 +130,11 @@ def load_vlm_config() -> VLMConfig:
     config = get_config()
     pipeline = config.pipeline
     
-    # Determine model type from model name
-    model_type = _infer_model_type(pipeline.vlm_model)
-    
     # Parse analysis tags from comma-separated string
     analysis_tags = [tag.strip() for tag in pipeline.vlm_analysis_tags.split(',') if tag.strip()]
     
-    # Build engine config - matching backend's vlm_config.py structure
-    # Note: base_url removed - use multiplexer endpoints instead
+    # Build engine config
     engine_config = VLMEngineConfig(
-        model_type=model_type,
         model_name=pipeline.vlm_model,
         api_key=pipeline.vlm_api_key,
         timeout=pipeline.vlm_timeout,
@@ -149,10 +142,10 @@ def load_vlm_config() -> VLMConfig:
         max_concurrent=pipeline.vlm_max_concurrent_requests,
     )
     
-    # Build processing config - matching backend's get_vlm_processing_params()
+    # Build processing config
     processing_config = VLMProcessingConfig(
         enabled=pipeline.vlm_enabled,
-        frame_count=20,  # Default, can be overridden
+        frame_count=20,
         frame_interval=pipeline.vlm_frame_interval,
         threshold=pipeline.vlm_threshold,
         return_timestamps=pipeline.vlm_return_timestamps,
@@ -160,7 +153,7 @@ def load_vlm_config() -> VLMConfig:
         save_to_file=True,
     )
     
-    # Build multiplexer config - matching backend's multiplexer configuration
+    # Build multiplexer config
     multiplexer_endpoints = []
     if pipeline.vlm_multiplexer_endpoints:
         for ep_data in pipeline.vlm_multiplexer_endpoints:
@@ -179,14 +172,13 @@ def load_vlm_config() -> VLMConfig:
         max_concurrent_requests=pipeline.vlm_max_concurrent_requests,
     )
     
-    # Build complete config with all settings
+    # Build complete config
     vlm_config = VLMConfig(
         engine=engine_config,
         processing=processing_config,
         multiplexer=multiplexer_config,
         cache_enabled=True,
         cache_dir=Path(config.data_dir) / "vlm_cache" if config.data_dir else None,
-        # Additional metadata for compatibility with backend
         analysis_tags=analysis_tags,
         detected_tag_confidence=pipeline.vlm_detected_tag_confidence,
     )
@@ -195,29 +187,6 @@ def load_vlm_config() -> VLMConfig:
     vlm_config = _apply_env_overrides(vlm_config)
     
     return vlm_config
-
-
-def _infer_model_type(model_name: str) -> str:
-    """Infer model type from model name.
-    
-    Args:
-        model_name: Model identifier
-        
-    Returns:
-        Model type string
-    """
-    model_lower = model_name.lower()
-    
-    if "gpt" in model_lower or model_lower.startswith("openai"):
-        return "openai"
-    elif "gemini" in model_lower:
-        return "gemini"
-    elif "claude" in model_lower:
-        return "anthropic"
-    elif "llava" in model_lower or "local" in model_lower:
-        return "local"
-    else:
-        return "openai"  # Default to OpenAI-compatible API
 
 
 def _apply_env_overrides(config: VLMConfig) -> VLMConfig:
@@ -229,19 +198,9 @@ def _apply_env_overrides(config: VLMConfig) -> VLMConfig:
     Returns:
         Updated configuration
     """
-    # API key overrides
-    if api_key := os.environ.get("OPENAI_API_KEY"):
-        if config.engine.model_type == "openai":
-            config.engine.api_key = api_key
-    
-    if api_key := os.environ.get("GOOGLE_API_KEY"):
-        if config.engine.model_type == "gemini":
-            config.engine.api_key = api_key
-    
+    # API key override
     if api_key := os.environ.get("VLM_API_KEY"):
         config.engine.api_key = api_key
-    
-    # Note: VLM_BASE_URL removed - use multiplexer endpoints instead
     
     # Processing config overrides
     if frame_count := os.environ.get("VLM_FRAME_COUNT"):
@@ -329,7 +288,7 @@ def get_processing_params(config: Optional[VLMConfig] = None) -> Dict[str, Any]:
         "save_to_file": config.processing.save_to_file,
         "analysis_tags": config.analysis_tags,
         "detected_tag_confidence": config.detected_tag_confidence,
-        "vr_video": False,  # VR video support can be added later if needed
+        "vr_video": False,
     }
 
 
@@ -447,8 +406,6 @@ def get_example_multiplexer_config() -> str:
 def validate_vlm_config(config: Optional[VLMConfig] = None) -> List[str]:
     """Validate VLM configuration and return list of issues.
     
-    Matches the validation logic from the gold standard backend.
-    
     Args:
         config: VLMConfig to validate (loads from global if not provided)
         
@@ -459,16 +416,6 @@ def validate_vlm_config(config: Optional[VLMConfig] = None) -> List[str]:
         config = load_vlm_config()
     
     errors: List[str] = []
-    
-    # Check if VLM is enabled but no API key
-    if config.processing.enabled:
-        if not config.engine.api_key:
-            # Only error if not using local model
-            if config.engine.model_type != "local":
-                errors.append(
-                    f"VLM is enabled but no API key set for {config.engine.model_type} model. "
-                    "Set the appropriate API key environment variable or in config."
-                )
     
     # Validate processing parameters
     if config.processing.frame_count < 1:

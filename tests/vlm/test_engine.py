@@ -11,8 +11,6 @@ from PIL import Image
 
 from haven_cli.vlm.engine import (
     AnalysisConfig,
-    GeminiVLMEngine,
-    LocalVLMEngine,
     OpenAIVLMEngine,
     VLMEngine,
     VLMResponse,
@@ -196,104 +194,11 @@ class TestOpenAIVLMEngine:
         mock_client.aclose.assert_called_once()
 
 
-class TestGeminiVLMEngine:
-    """Tests for Gemini VLM Engine."""
-    
-    @pytest.mark.asyncio
-    async def test_initialization(self):
-        """Test engine initialization."""
-        engine = GeminiVLMEngine(
-            api_key="test-key",
-            model="gemini-pro-vision",
-        )
-        
-        with patch("httpx.AsyncClient"):
-            await engine.initialize()
-            
-            assert engine._initialized
-    
-    @pytest.mark.asyncio
-    async def test_analyze_frames(self, sample_frames):
-        """Test analyzing frames with Gemini."""
-        engine = GeminiVLMEngine(api_key="test-key")
-        
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "candidates": [
-                {
-                    "content": {
-                        "parts": [{"text": '{"tags": [{"name": "test"}]}'}]
-                    }
-                }
-            ],
-            "usageMetadata": {"totalTokenCount": 200},
-        }
-        mock_response.raise_for_status = MagicMock()
-        
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_response
-        
-        with patch.object(engine, "_client", mock_client):
-            with patch.object(engine, "_initialized", True):
-                response = await engine.analyze_frames(
-                    sample_frames,
-                    "Analyze these frames",
-                )
-        
-        assert isinstance(response, VLMResponse)
-        assert response.model == "gemini-pro-vision"
-        assert response.tokens_used == 200
-
-
-class TestLocalVLMEngine:
-    """Tests for Local VLM Engine."""
-    
-    @pytest.mark.asyncio
-    async def test_initialization(self):
-        """Test engine initialization."""
-        engine = LocalVLMEngine(
-            base_url="http://localhost:8000/v1",
-            model="local-model",
-        )
-        
-        with patch("httpx.AsyncClient"):
-            await engine.initialize()
-            
-            assert engine._initialized
-    
-    @pytest.mark.asyncio
-    async def test_analyze_frames(self, sample_frames):
-        """Test analyzing frames with local model."""
-        engine = LocalVLMEngine(base_url="http://localhost:8000/v1")
-        
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "choices": [
-                {"message": {"content": '{"tags": [{"name": "local_test"}]}'}}
-            ],
-            "usage": {"total_tokens": 100},
-        }
-        mock_response.raise_for_status = MagicMock()
-        
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_response
-        
-        with patch.object(engine, "_client", mock_client):
-            with patch.object(engine, "_initialized", True):
-                response = await engine.analyze_frames(
-                    sample_frames,
-                    "Analyze these frames",
-                )
-        
-        assert isinstance(response, VLMResponse)
-        assert response.tokens_used == 100
-
-
 class TestCreateVLMEngine:
     """Tests for engine factory function."""
     
-    def test_create_openai_engine(self):
-        """Test creating OpenAI engine."""
+    def test_create_openai_compatible_engine(self):
+        """Test creating OpenAI-compatible engine."""
         engine = create_vlm_engine(
             model="gpt-4-vision-preview",
             api_key="test-key",
@@ -302,32 +207,29 @@ class TestCreateVLMEngine:
         assert isinstance(engine, OpenAIVLMEngine)
         assert engine.model == "gpt-4-vision-preview"
     
-    def test_create_gemini_engine(self):
-        """Test creating Gemini engine."""
+    def test_create_engine_with_base_url(self):
+        """Test creating engine with custom base URL."""
         engine = create_vlm_engine(
-            model="gemini-pro-vision",
+            model="custom-model",
             api_key="test-key",
-        )
-        
-        assert isinstance(engine, GeminiVLMEngine)
-    
-    def test_create_local_engine(self):
-        """Test creating local engine."""
-        engine = create_vlm_engine(
-            model="llava-model",
             base_url="http://localhost:8000/v1",
         )
         
-        assert isinstance(engine, LocalVLMEngine)
+        assert isinstance(engine, OpenAIVLMEngine)
+        assert engine.base_url == "http://localhost:8000/v1"
     
-    def test_create_default_engine(self):
-        """Test default engine creation."""
+    def test_create_engine_with_config(self):
+        """Test creating engine with custom config."""
+        config = AnalysisConfig(frame_count=10, threshold=0.8)
         engine = create_vlm_engine(
-            model="unknown-model",
-            base_url="http://custom:8000/v1",
+            model="test-model",
+            api_key="test-key",
+            config=config,
         )
         
-        assert isinstance(engine, LocalVLMEngine)
+        assert isinstance(engine, OpenAIVLMEngine)
+        assert engine.config.frame_count == 10
+        assert engine.config.threshold == 0.8
 
 
 class TestFrameSampling:

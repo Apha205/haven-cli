@@ -5,7 +5,7 @@ including:
 - Frame sampling and analysis
 - Timestamp extraction
 - Content tag classification
-- Multiple backend support (OpenAI, Gemini, Local)
+- OpenAI-compatible API support (via multiplexer-llm)
 
 Example:
     >>> from haven_cli.vlm import VLMProcessor, process_video
@@ -23,8 +23,6 @@ Example:
 from haven_cli.vlm.engine import (
     VLMEngine,
     OpenAIVLMEngine,
-    GeminiVLMEngine,
-    LocalVLMEngine,
     VLMResponse,
     AnalysisConfig,
     create_vlm_engine,
@@ -69,16 +67,14 @@ from haven_cli.vlm.prompts import (
 )
 
 __all__ = [
-    # Engines (legacy interface)
+    # Engines
     "VLMEngine",
     "OpenAIVLMEngine",
-    "GeminiVLMEngine",
-    "LocalVLMEngine",
     "VLMResponse",
     "AnalysisConfig",
     "create_vlm_engine",
     
-    # Backend-compatible interface (gold standard)
+    # Backend-compatible interface
     "BackendVLMEngine",
     "EngineConfig",
     "ModelConfig",

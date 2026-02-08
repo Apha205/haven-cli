@@ -158,11 +158,40 @@ export interface HybridEncryptionResult {
 /** AES-256 key size in bytes */
 const AES_KEY_SIZE = 32;
 
-/** AES-GCM IV size in bytes (96 bits as per NIST recommendation) */
-const AES_IV_SIZE = 12;
 
+/**
+ * Convert ArrayBuffer or Uint8Array to base64 string
+ */
+=======
+/** AES-GCM authentication tag size in bytes (128 bits) */
+const AES_AUTH_TAG_SIZE = 16;
+
+/** Default chunk size for progress reporting (1MB) */
+const DEFAULT_CHUNK_SIZE = 1024 * 1024;
+
+// ============================================================================
 // Utility Functions
 // ============================================================================
+
+/**
+ * Convert ArrayBuffer or Uint8Array to base64 string
+ */============================================================================
+// Utility Functions
+// ============================================================================
+
+/**
+ * Convert ArrayBuffer or Uint8Array to base64 string
+ */
+=======
+/** AES-GCM authentication tag size in bytes (128 bits) */
+const AES_AUTH_TAG_SIZE = 16;
+
+/** Default chunk size for progress reporting (1MB) */
+const DEFAULT_CHUNK_SIZE = 1024 * 1024;
+
+// ============================================================================
+// Utility Functions
+// ========================================================================================================================================================
 
 /**
  * Convert ArrayBuffer or Uint8Array to base64 string
@@ -649,7 +678,7 @@ async function getAuthContext(privateKey: string, chain: string = 'ethereum'): P
  *
  * This function:
  * 1. Generates a random AES-256 key
- * 2. Encrypts the file locally using AES-GCM
+ * 2. Encrypts the file locally using AES-GCM (chunked for progress reporting)
  * 3. Encrypts the AES key using Lit Protocol (BLS-IBE)
  * 4. Returns encrypted file + metadata
  *
@@ -657,43 +686,57 @@ async function getAuthContext(privateKey: string, chain: string = 'ethereum'): P
  * - Only 32 bytes sent to Lit nodes (the AES key)
  * - File encryption is hardware accelerated
  * - Can handle files of any size efficiently
+ * - Progress reporting for large files
  *
  * @param file - File or ArrayBuffer to encrypt
  * @param privateKey - Private key for access control
  * @param chain - Blockchain chain (default: 'ethereum')
- * @param onProgress - Optional progress callback
+ * @param onProgress - Optional progress callback (percent, message, bytesProcessed, totalBytes)
+ * @param network - Lit network (default: 'naga')
  * @returns Encrypted file and metadata
  */
 export async function hybridEncryptFile(
   file: ArrayBuffer,
   privateKey: string,
   chain: string = 'ethereum',
-  onProgress?: (message: string) => void,
+  onProgress?: EncryptionProgressCallback,
   network: string = 'naga'
 ): Promise<HybridEncryptionResult> {
-  onProgress?.('Generating encryption key...');
-
-  // Step 1: Generate local AES key and IV
+  const totalBytes = file.byteLength;
+  
+  // Step 1: Generate local AES key and IV (5%)
+  onProgress?.(0, 0, totalBytes);
+  onProgress?.(5, 'Generating encryption key...', 0, totalBytes);
   const aesKey = generateAESKey();
   const iv = generateIV();
 
-  // Step 2: Read file data
-  onProgress?.('Reading file...');
+  // Step 2: Read file data (10%)
+  onProgress?.(10, 'Reading file...', 0, totalBytes);
   const fileData = new Uint8Array(file);
 
-  // Step 3: Encrypt file locally with AES
-  onProgress?.('Encrypting file locally (AES-256-GCM)...');
-  const encryptedFile = await aesEncrypt(fileData, aesKey, iv);
+  // Step 3: Encrypt file locally with AES using chunked encryption for progress (10-85%)
+  // The chunked encryption will report progress from 10% to 85%
+  const encryptedFile = await aesEncryptChunked(
+    fileData,
+    aesKey,
+    iv,
+    (percent, bytesProcessed, _totalBytes) => {
+      // Map chunked encryption progress (0-100) to overall progress (10-85)
+      const overallPercent = 10 + (percent * 0.75);
+      onProgress?.(overallPercent, 'Encrypting file locally (AES-256-GCM)...', bytesProcessed, totalBytes);
+    }
+  );
 
-  // Step 4: Calculate hash of original file
+  // Step 4: Calculate hash of original file (87%)
+  onProgress?.(87, 'Calculating file hash...', fileData.byteLength, totalBytes);
   const originalHash = await sha256Hash(fileData);
 
-  // Step 5: Initialize Lit client and encrypt AES key
-  onProgress?.('Initializing Lit Protocol...');
+  // Step 5: Initialize Lit client and encrypt AES key (88-95%)
+  onProgress?.(88, 'Initializing Lit Protocol...', fileData.byteLength, totalBytes);
   const client = await initLitClient(network);
   const walletAddress = getWalletAddressFromPrivateKey(privateKey);
 
-  onProgress?.('Encrypting key with Lit Protocol...');
+  onProgress?.(90, 'Encrypting key with Lit Protocol...', fileData.byteLength, totalBytes);
   const accessControlConditions = createOwnerOnlyAccessControlConditions(walletAddress);
   const unifiedAccessControlConditions = toUnifiedAccessControlConditions(accessControlConditions);
 
@@ -705,7 +748,8 @@ export async function hybridEncryptFile(
     chain,
   });
 
-  // Step 6: Construct metadata
+  // Step 6: Construct metadata (97%)
+  onProgress?.(97, 'Finalizing encryption...', fileData.byteLength, totalBytes);
   const metadata: HybridEncryptionMetadata = {
     version: 'hybrid-v1',
     encryptedKey: litResult.ciphertext,
@@ -719,7 +763,8 @@ export async function hybridEncryptFile(
     originalHash,
   };
 
-  onProgress?.('Encryption complete');
+  // Complete (100%)
+  onProgress?.(100, 'Encryption complete', fileData.byteLength, totalBytes);
 
   // Clear sensitive key from memory
   aesKey.fill(0);
@@ -732,20 +777,21 @@ export async function hybridEncryptFile(
  *
  * This function:
  * 1. Decrypts the AES key from Lit Protocol
- * 2. Decrypts the file locally using AES-GCM
+ * 2. Decrypts the file locally using AES-GCM (chunked for progress reporting)
  * 3. Returns decrypted file as Uint8Array
  *
- * @param encryptedFile - AES-encrypted file data
+ * @param encryptedFile - AES-encrypted file data (chunked format)
  * @param metadata - Hybrid encryption metadata
  * @param privateKey - Private key for authentication
- * @param onProgress - Optional progress callback
+ * @param onProgress - Optional progress callback (percent, message, bytesProcessed, totalBytes)
+ * @param network - Lit network (default: 'naga')
  * @returns Decrypted file as Uint8Array
  */
 export async function hybridDecryptFile(
   encryptedFile: Uint8Array,
   metadata: HybridEncryptionMetadata,
   privateKey: string,
-  onProgress?: (message: string) => void,
+  onProgress?: EncryptionProgressCallback,
   network: string = 'naga'
 ): Promise<Uint8Array> {
   // Validate metadata version
@@ -755,7 +801,10 @@ export async function hybridDecryptFile(
     );
   }
 
-  onProgress?.('Initializing Lit Protocol...');
+  const totalBytes = metadata.originalSize || encryptedFile.byteLength;
+  
+  // Step 1: Initialize Lit Protocol (0-5%)
+  onProgress?.(0, 'Initializing Lit Protocol...', 0, totalBytes);
   
   // Verify payment setup before attempting decryption (mainnet only)
   // This is similar to how Synapse SDK checks upload readiness
@@ -768,12 +817,16 @@ export async function hybridDecryptFile(
     // This allows dev networks to work without credits
   }
   
+  // Step 2: Connect to Lit client (5-10%)
+  onProgress?.(5, 'Connecting to Lit network...', 0, totalBytes);
   const client = await initLitClient(network);
 
-  onProgress?.('Authenticating...');
+  // Step 3: Authenticate (10-15%)
+  onProgress?.(10, 'Authenticating...', 0, totalBytes);
   const authContext = await getAuthContext(privateKey, metadata.chain);
 
-  onProgress?.('Decrypting encryption key...');
+  // Step 4: Decrypt encryption key (15-20%)
+  onProgress?.(15, 'Decrypting encryption key...', 0, totalBytes);
   const unifiedAccessControlConditions = toUnifiedAccessControlConditions(
     metadata.accessControlConditions
   );
@@ -793,13 +846,13 @@ export async function hybridDecryptFile(
   const aesKey = keyResult.decryptedData as Uint8Array;
 
   try {
-    // Decrypt file locally with AES
-    onProgress?.('Decrypting file locally...');
-    const iv = new Uint8Array(base64ToArrayBuffer(metadata.iv));
-    const decryptedData = await aesDecrypt(encryptedFile, aesKey, iv);
+    // Step 5: Decrypt file locally with AES using chunked decryption (20-95%)
+    onProgress?.(20, 'Decrypting file locally...', 0, totalBytes);
+    const decryptedData = await aesDecryptChunked(encryptedFile, aesKey);
 
-    // Verify hash if available
+    // Step 6: Verify hash if available (95-100%)
     if (metadata.originalHash) {
+      onProgress?.(95, 'Verifying file integrity...', decryptedData.byteLength, totalBytes);
       const computedHash = await sha256Hash(decryptedData);
       if (computedHash !== metadata.originalHash) {
         throw new Error(
@@ -808,7 +861,7 @@ export async function hybridDecryptFile(
       }
     }
 
-    onProgress?.('Decryption complete');
+    onProgress?.(100, 'Decryption complete', decryptedData.byteLength, totalBytes);
 
     return decryptedData;
   } finally {

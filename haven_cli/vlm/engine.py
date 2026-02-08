@@ -4,9 +4,7 @@ This module provides abstract and concrete implementations for VLM engines
 that can analyze video frames and extract semantic information.
 
 Supported backends:
-- OpenAI GPT-4 Vision (GPT-4V)
-- Google Gemini
-- Local models (LLaVA and compatible)
+- OpenAI-compatible APIs (GPT-4 Vision, local models via multiplexer-llm)
 """
 
 from __future__ import annotations
@@ -18,7 +16,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Callable, AsyncIterator
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from PIL import Image
@@ -163,10 +161,8 @@ class VLMEngine(ABC):
         if strategy == "uniform":
             timestamps = self._calculate_uniform_timestamps(duration, count)
         elif strategy == "scene_change":
-            # For now, fall back to uniform (scene detection can be added later)
             timestamps = self._calculate_uniform_timestamps(duration, count)
         elif strategy == "keyframe":
-            # For now, fall back to uniform (keyframe extraction can be added later)
             timestamps = self._calculate_uniform_timestamps(duration, count)
         else:
             raise ValueError(f"Unknown sampling strategy: {strategy}")
@@ -218,9 +214,12 @@ class VLMEngine(ABC):
 
 
 class OpenAIVLMEngine(VLMEngine):
-    """OpenAI GPT-4 Vision engine.
+    """OpenAI-compatible VLM engine.
     
-    Uses OpenAI's GPT-4 Vision API for image analysis.
+    Uses OpenAI's API format for image analysis. Works with:
+    - OpenAI's GPT-4 Vision API
+    - Local servers (vLLM, llama.cpp, etc.) via OpenAI-compatible endpoints
+    - Multiplexer-llm endpoints
     """
     
     def __init__(
@@ -230,13 +229,13 @@ class OpenAIVLMEngine(VLMEngine):
         config: Optional[AnalysisConfig] = None,
         base_url: Optional[str] = None,
     ):
-        """Initialize OpenAI VLM engine.
+        """Initialize OpenAI-compatible VLM engine.
         
         Args:
-            api_key: OpenAI API key
-            model: Model name (gpt-4-vision-preview, gpt-4o, etc.)
+            api_key: API key
+            model: Model name (e.g., "gpt-4-vision-preview", "zai-org/glm-4.6v-flash")
             config: Analysis configuration
-            base_url: Optional custom API base URL
+            base_url: Optional custom API base URL (for local servers)
         """
         super().__init__(model, config or AnalysisConfig())
         self.api_key = api_key
@@ -249,7 +248,7 @@ class OpenAIVLMEngine(VLMEngine):
             return
         
         if not self.api_key:
-            raise ValueError("OpenAI API key is required")
+            raise ValueError("API key is required")
         
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
@@ -267,7 +266,7 @@ class OpenAIVLMEngine(VLMEngine):
         frames: List[Image.Image],
         prompt: str,
     ) -> VLMResponse:
-        """Analyze frames using GPT-4 Vision.
+        """Analyze frames using OpenAI-compatible API.
         
         Args:
             frames: List of PIL Image objects
@@ -337,7 +336,7 @@ class OpenAIVLMEngine(VLMEngine):
             )
             
         except httpx.HTTPStatusError as e:
-            error_msg = f"OpenAI API error: {e.response.status_code}"
+            error_msg = f"API error: {e.response.status_code}"
             try:
                 error_data = e.response.json()
                 error_msg = f"{error_msg} - {error_data.get('error', {}).get('message', '')}"
@@ -346,7 +345,7 @@ class OpenAIVLMEngine(VLMEngine):
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e
         except Exception as e:
-            logger.error(f"Error calling OpenAI API: {e}")
+            logger.error(f"Error calling API: {e}")
             raise
     
     def _parse_response_content(self, content: str) -> Dict[str, Any]:
@@ -395,377 +394,30 @@ class OpenAIVLMEngine(VLMEngine):
             self._initialized = False
 
 
-class GeminiVLMEngine(VLMEngine):
-    """Google Gemini Vision engine.
-    
-    Uses Google's Gemini API for image analysis.
-    """
-    
-    def __init__(
-        self,
-        api_key: str,
-        model: str = "gemini-pro-vision",
-        config: Optional[AnalysisConfig] = None,
-    ):
-        """Initialize Gemini VLM engine.
-        
-        Args:
-            api_key: Google API key
-            model: Model name (gemini-pro-vision, gemini-1.5-flash, etc.)
-            config: Analysis configuration
-        """
-        super().__init__(model, config or AnalysisConfig())
-        self.api_key = api_key
-        self.base_url = "https://generativelanguage.googleapis.com/v1beta"
-        self._client: Optional[httpx.AsyncClient] = None
-    
-    async def initialize(self) -> None:
-        """Initialize the HTTP client."""
-        if self._initialized:
-            return
-        
-        if not self.api_key:
-            raise ValueError("Google API key is required")
-        
-        self._client = httpx.AsyncClient(
-            base_url=self.base_url,
-            timeout=self.config.timeout,
-        )
-        
-        self._initialized = True
-    
-    async def analyze_frames(
-        self,
-        frames: List[Image.Image],
-        prompt: str,
-    ) -> VLMResponse:
-        """Analyze frames using Gemini.
-        
-        Args:
-            frames: List of PIL Image objects
-            prompt: Analysis prompt
-            
-        Returns:
-            VLMResponse with parsed results
-        """
-        if not self._initialized:
-            await self.initialize()
-        
-        if not self._client:
-            raise RuntimeError("Engine not initialized")
-        
-        # Encode frames
-        parts = [{"text": prompt}]
-        for frame in frames:
-            image_data = self._encode_frame_to_base64(frame, format="PNG")
-            # Remove data URI prefix for Gemini
-            if "," in image_data:
-                image_data = image_data.split(",", 1)[1]
-            
-            parts.append({
-                "inline_data": {
-                    "mime_type": "image/png",
-                    "data": image_data,
-                }
-            })
-        
-        payload = {
-            "contents": [{"parts": parts}],
-            "generationConfig": {
-                "maxOutputTokens": self.config.max_tokens,
-            },
-        }
-        
-        import time
-        start_time = time.time()
-        
-        try:
-            response = await self._client.post(
-                f"/models/{self.model}:generateContent",
-                json=payload,
-                params={"key": self.api_key},
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            processing_time = (time.time() - start_time) * 1000
-            
-            # Extract response text
-            content = data.get("candidates", [{}])[0].get("content", {})
-            parts = content.get("parts", [])
-            text_parts = [p.get("text", "") for p in parts if "text" in p]
-            content_text = " ".join(text_parts)
-            
-            # Try to parse as JSON
-            parsed_result = self._parse_response_content(content_text)
-            
-            return VLMResponse(
-                raw_response=data,
-                parsed_result=parsed_result,
-                model=self.model,
-                tokens_used=data.get("usageMetadata", {}).get("totalTokenCount"),
-                processing_time_ms=processing_time,
-            )
-            
-        except httpx.HTTPStatusError as e:
-            error_msg = f"Gemini API error: {e.response.status_code}"
-            try:
-                error_data = e.response.json()
-                error_msg = f"{error_msg} - {error_data.get('error', {}).get('message', '')}"
-            except Exception:
-                pass
-            logger.error(error_msg)
-            raise RuntimeError(error_msg) from e
-        except Exception as e:
-            logger.error(f"Error calling Gemini API: {e}")
-            raise
-    
-    def _parse_response_content(self, content: str) -> Dict[str, Any]:
-        """Parse response content, extracting JSON if present."""
-        import re
-        
-        # Try direct JSON parsing
-        try:
-            return json.loads(content)
-        except json.JSONDecodeError:
-            pass
-        
-        # Try to extract JSON from markdown
-        json_pattern = r"```(?:json)?\s*([\s\S]*?)```"
-        matches = re.findall(json_pattern, content)
-        
-        for match in matches:
-            try:
-                return json.loads(match.strip())
-            except json.JSONDecodeError:
-                continue
-        
-        # Try to find JSON-like structure
-        json_pattern2 = r"\{[\s\S]*\}"
-        match = re.search(json_pattern2, content)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
-        
-        return {"raw_text": content}
-    
-    async def close(self) -> None:
-        """Close the HTTP client."""
-        if self._client:
-            await self._client.aclose()
-            self._client = None
-            self._initialized = False
-
-
-class LocalVLMEngine(VLMEngine):
-    """Local VLM engine using vLLM, llama.cpp, or compatible APIs.
-    
-    Connects to local model servers that implement OpenAI-compatible APIs.
-    """
-    
-    def __init__(
-        self,
-        base_url: str,
-        model: str = "local",
-        config: Optional[AnalysisConfig] = None,
-        api_key: Optional[str] = None,
-    ):
-        """Initialize Local VLM engine.
-        
-        Args:
-            base_url: Base URL of the local API server (e.g., http://localhost:8000/v1)
-            model: Model identifier
-            config: Analysis configuration
-            api_key: Optional API key (for servers that require it)
-        """
-        super().__init__(model, config or AnalysisConfig())
-        self.base_url = base_url.rstrip("/")
-        self.api_key = api_key or "not-needed"
-        self._client: Optional[httpx.AsyncClient] = None
-    
-    async def initialize(self) -> None:
-        """Initialize the HTTP client."""
-        if self._initialized:
-            return
-        
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        
-        self._client = httpx.AsyncClient(
-            base_url=self.base_url,
-            headers=headers,
-            timeout=self.config.timeout,
-        )
-        
-        self._initialized = True
-    
-    async def analyze_frames(
-        self,
-        frames: List[Image.Image],
-        prompt: str,
-    ) -> VLMResponse:
-        """Analyze frames using local model.
-        
-        Args:
-            frames: List of PIL Image objects
-            prompt: Analysis prompt
-            
-        Returns:
-            VLMResponse with parsed results
-        """
-        if not self._initialized:
-            await self.initialize()
-        
-        if not self._client:
-            raise RuntimeError("Engine not initialized")
-        
-        # Encode frames to base64
-        image_urls = [
-            self._encode_frame_to_base64(frame, format="JPEG", quality=85)
-            for frame in frames
-        ]
-        
-        # Build message content (OpenAI-compatible format)
-        content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
-        for url in image_urls:
-            content.append({
-                "type": "image_url",
-                "image_url": {"url": url},
-            })
-        
-        payload = {
-            "model": self.model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": content,
-                }
-            ],
-            "max_tokens": self.config.max_tokens,
-        }
-        
-        import time
-        start_time = time.time()
-        
-        try:
-            response = await self._client.post(
-                "/chat/completions",
-                json=payload,
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            processing_time = (time.time() - start_time) * 1000
-            
-            # Extract response
-            message = data["choices"][0].get("message", {})
-            content_text = message.get("content", "")
-            
-            # Try to parse as JSON
-            parsed_result = self._parse_response_content(content_text)
-            
-            return VLMResponse(
-                raw_response=data,
-                parsed_result=parsed_result,
-                model=self.model,
-                tokens_used=data.get("usage", {}).get("total_tokens"),
-                processing_time_ms=processing_time,
-            )
-            
-        except httpx.HTTPStatusError as e:
-            error_msg = f"Local VLM API error: {e.response.status_code}"
-            logger.error(error_msg)
-            raise RuntimeError(error_msg) from e
-        except Exception as e:
-            logger.error(f"Error calling local VLM API: {e}")
-            raise
-    
-    def _parse_response_content(self, content: str) -> Dict[str, Any]:
-        """Parse response content, extracting JSON if present."""
-        import re
-        
-        try:
-            return json.loads(content)
-        except json.JSONDecodeError:
-            pass
-        
-        json_pattern = r"```(?:json)?\s*([\s\S]*?)```"
-        matches = re.findall(json_pattern, content)
-        
-        for match in matches:
-            try:
-                return json.loads(match.strip())
-            except json.JSONDecodeError:
-                continue
-        
-        json_pattern2 = r"\{[\s\S]*\}"
-        match = re.search(json_pattern2, content)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
-        
-        return {"raw_text": content}
-    
-    async def close(self) -> None:
-        """Close the HTTP client."""
-        if self._client:
-            await self._client.aclose()
-            self._client = None
-            self._initialized = False
-
-
 def create_vlm_engine(
     model: str,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     config: Optional[AnalysisConfig] = None,
 ) -> VLMEngine:
-    """Factory function to create VLM engine based on model name.
+    """Factory function to create VLM engine.
+    
+    Creates an OpenAI-compatible VLM engine. All VLM processing goes through
+    OpenAI-compatible APIs, including local servers via multiplexer-llm.
     
     Args:
-        model: Model identifier (e.g., "gpt-4-vision-preview", "gemini-pro-vision")
+        model: Model identifier (e.g., "gpt-4-vision-preview", "zai-org/glm-4.6v-flash")
         api_key: API key for the service
-        base_url: Optional custom base URL
+        base_url: Optional custom base URL (for local servers)
         config: Analysis configuration
         
     Returns:
         Configured VLMEngine instance
-        
-    Raises:
-        ValueError: If model type is not recognized
     """
-    model_lower = model.lower()
-    
-    if "gpt" in model_lower or "openai" in model_lower:
-        return OpenAIVLMEngine(
-            api_key=api_key or "",
-            model=model,
-            config=config,
-            base_url=base_url,
-        )
-    elif "gemini" in model_lower:
-        return GeminiVLMEngine(
-            api_key=api_key or "",
-            model=model,
-            config=config,
-        )
-    elif "local" in model_lower or "llava" in model_lower or base_url:
-        return LocalVLMEngine(
-            base_url=base_url or "http://localhost:8000/v1",
-            model=model,
-            config=config,
-            api_key=api_key,
-        )
-    else:
-        # Default to OpenAI-compatible API
-        return LocalVLMEngine(
-            base_url=base_url or "http://localhost:8000/v1",
-            model=model,
-            config=config,
-            api_key=api_key,
-        )
+    # All engines use OpenAI-compatible API format
+    return OpenAIVLMEngine(
+        api_key=api_key or "",
+        model=model,
+        config=config,
+        base_url=base_url,
+    )

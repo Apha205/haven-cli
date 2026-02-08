@@ -134,7 +134,7 @@ For `naga-dev` network, you can get test tokens from the Lit faucet:
 The following environment variables are used for Lit Protocol payments:
 
 ```bash
-# Required for authentication
+# Required for authentication (consolidated variable for all blockchain operations)
 export HAVEN_PRIVATE_KEY="your-private-key"
 
 # Optional: Specify Lit network (default: naga)

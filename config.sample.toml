@@ -1,0 +1,150 @@
+# Haven CLI Configuration File
+# Copy this file to ~/.config/haven/config.toml and customize as needed
+
+# ============================================================================
+# Blockchain Network Configuration
+# ============================================================================
+
+[blockchain]
+# Unified network mode - sets all blockchain integrations at once
+# Options: "testnet" (default, safe for development) or "mainnet" (production, uses real tokens)
+network_mode = "testnet"
+
+# Optional: Override specific endpoints (if not set, uses network_mode defaults)
+# lit_network_override = "naga-dev"  # Override Lit network (e.g., "naga" for mainnet, "naga-dev" for testnet)
+# filecoin_rpc_override = ""         # Override Filecoin RPC endpoint
+# arkiv_rpc_override = ""            # Override Arkiv RPC endpoint
+
+# ============================================================================
+# Pipeline Configuration
+# ============================================================================
+
+[pipeline]
+# VLM Analysis - Core Settings
+vlm_enabled = true
+vlm_model = "zai-org/glm-4.6v-flash"
+vlm_api_key = "your-openai-api-key-here"  # Set via environment: HAVEN_VLM_API_KEY (recommended)
+vlm_timeout = 70.0
+
+# VLM Analysis - Tags Configuration
+# Comma-separated list of tags to detect in videos
+# Default includes common objects, actions, and items
+vlm_analysis_tags = "person,car,bicycle,motorcycle,airplane,bus,train,truck,boat,traffic_light,stop_sign,walking,running,standing,sitting,talking,eating,drinking,phone,laptop,book,bag,umbrella,skateboard,surfboard,tennis_racket"
+
+# VLM Analysis - Processing Parameters
+vlm_frame_interval = 2.0        # Seconds between frame samples (float)
+vlm_threshold = 0.5             # Confidence threshold for tag detection, 0-1
+vlm_return_timestamps = true    # Include timestamp information in results
+vlm_return_confidence = true    # Include confidence scores in results
+
+# VLM Analysis - Advanced Settings
+vlm_max_new_tokens = 128        # Maximum tokens in VLM response
+vlm_detected_tag_confidence = 0.99  # Confidence threshold for detected tags
+
+# VLM Multiplexer - Load Balancing Configuration
+# Multiplexer is the ONLY supported method for VLM processing
+# Default: enabled with localhost endpoint (e.g., LM Studio, LocalAI)
+vlm_multiplexer_enabled = true
+vlm_max_concurrent_requests = 15  # Global limit on concurrent requests (admission control)
+
+# Encryption Settings (Lit Protocol)
+# Note: Lit network is derived from blockchain.network_mode
+# Set blockchain.lit_network_override to override
+encryption_enabled = true
+
+# Upload Settings (Filecoin via Synapse)
+# Note: Filecoin RPC endpoint is derived from blockchain.network_mode
+# Set blockchain.filecoin_rpc_override to override
+# Note: Authentication requires HAVEN_PRIVATE_KEY environment variable
+upload_enabled = true
+
+# Sync Settings (Arkiv)
+# Note: Arkiv RPC endpoint is derived from blockchain.network_mode
+# Set blockchain.arkiv_rpc_override to override
+sync_enabled = true
+arkiv_contract = "0x0000000000000000000000000000000000000000"  # Your Arkiv contract address
+
+# Processing Settings
+max_concurrent_videos = 4
+retry_attempts = 3
+retry_delay = 5.0
+
+# Multiplexer endpoints configuration (TOML array of tables)
+# This MUST come after all other [pipeline] keys
+# Default: local LLM server at localhost:1234/v1
+[[pipeline.vlm_multiplexer_endpoints]]
+base_url = "http://localhost:1234/v1"
+name = "local-llm"
+weight = 1
+max_concurrent = 5
+# api_key = ""  # Optional: per-endpoint API key (overrides global vlm_api_key)
+# model_id = ""  # Optional: per-endpoint model (overrides global vlm_model)
+
+# Add more endpoints for load balancing (uncomment to add):
+# [[pipeline.vlm_multiplexer_endpoints]]
+# base_url = "http://secondary-server:1234/v1"
+# name = "secondary"
+# weight = 1
+# max_concurrent = 5
+
+# ============================================================================
+# Scheduler Configuration
+# ============================================================================
+
+[scheduler]
+enabled = true
+check_interval = 60  # seconds
+max_concurrent_jobs = 2
+default_cron = "0 */6 * * *"  # Every 6 hours
+job_timeout = 3600  # 1 hour
+state_file = "~/.local/share/haven/scheduler_state.json"
+
+# ============================================================================
+# Plugin Configuration
+# ============================================================================
+
+[plugins]
+# List of plugin directories to load plugins from
+plugin_dirs = []
+
+# List of plugin names to explicitly enable
+enabled_plugins = []
+
+# List of plugin names to explicitly disable
+disabled_plugins = []
+
+[plugins.settings]
+# Plugin-specific settings go here
+# Example:
+# [plugins.settings.youtube]
+# quality = "best"
+# format = "mp4"
+
+# ============================================================================
+# JavaScript Runtime Configuration
+# ============================================================================
+
+[js_runtime]
+# JavaScript runtime to use: "deno", "node", or null for auto-detect
+runtime = "deno"
+
+# Path to JS services directory (empty for default)
+services_path = ""
+
+# Timeouts
+startup_timeout = 30.0
+request_timeout = 60.0
+
+# Debug mode
+debug = false
+
+# ============================================================================
+# Logging Configuration
+# ============================================================================
+
+[logging]
+level = "INFO"  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+file = ""  # Path to log file (empty for stdout only)
+max_size = 10485760  # 10MB
+backup_count = 5

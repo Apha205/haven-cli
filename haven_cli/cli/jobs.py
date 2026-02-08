@@ -198,6 +198,9 @@ def run_job(
     """
     import asyncio
     from haven_cli.scheduler.job_scheduler import get_scheduler
+    from haven_cli.pipeline.manager import create_default_pipeline
+    from haven_cli.config import get_config
+    from haven_cli.js_runtime.manager import JSBridgeManager
     
     scheduler = get_scheduler()
     
@@ -212,7 +215,29 @@ def run_job(
     console.print(f"[bold]Running job:[/bold] {job.name}")
     
     async def execute() -> None:
+        # Initialize JS Bridge for blockchain operations
+        try:
+            await JSBridgeManager.get_instance().get_bridge()
+        except Exception as e:
+            console.print(f"[yellow]Warning: JS Bridge initialization failed: {e}[/yellow]")
+        
+        # Create pipeline manager with config
+        config = get_config()
+        pipeline_manager = create_default_pipeline(
+            max_concurrent=4,
+            config=config.__dict__,
+        )
+        
+        # Update scheduler with pipeline manager
+        scheduler._pipeline_manager = pipeline_manager
+        
         result = await scheduler.run_job_now(job.job_id)
+        
+        # Shutdown JS Bridge
+        try:
+            await JSBridgeManager.get_instance().shutdown()
+        except Exception:
+            pass
         
         if result.success:
             console.print(f"[green]✓[/green] Job completed")

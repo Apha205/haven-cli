@@ -102,7 +102,6 @@ class TestJSBridgeManagerConfiguration:
         # Set test environment variables
         os.environ["HAVEN_PRIVATE_KEY"] = "test_haven_key_123"
         os.environ["FILECOIN_RPC_URL"] = "https://test.filecoin.rpc"
-        os.environ["FILECOIN_PRIVATE_KEY"] = "test_filecoin_key_456"
         os.environ["SYNAPSE_API_KEY"] = "test_synapse_key_789"
         os.environ["HAVEN_TEST_VAR"] = "test_value"
         
@@ -117,16 +116,15 @@ class TestJSBridgeManagerConfiguration:
             assert env_vars.get("HAVEN_PRIVATE_KEY") == "test_haven_key_123"
             assert env_vars.get("HAVEN_TEST_VAR") == "test_value"
             
-            # FILECOIN_* vars should be passed
+            # FILECOIN_RPC_URL var should be passed (for RPC only, not private key)
             assert env_vars.get("FILECOIN_RPC_URL") == "https://test.filecoin.rpc"
-            assert env_vars.get("FILECOIN_PRIVATE_KEY") == "test_filecoin_key_456"
             
             # SYNAPSE_* vars should be passed
             assert env_vars.get("SYNAPSE_API_KEY") == "test_synapse_key_789"
             
         finally:
             # Clean up test env vars
-            for key in ["HAVEN_PRIVATE_KEY", "FILECOIN_RPC_URL", "FILECOIN_PRIVATE_KEY", 
+            for key in ["HAVEN_PRIVATE_KEY", "FILECOIN_RPC_URL", 
                        "SYNAPSE_API_KEY", "HAVEN_TEST_VAR"]:
                 if key in os.environ:
                     del os.environ[key]

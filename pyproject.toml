@@ -51,9 +51,10 @@ dependencies = [
     "arkiv-sdk==1.0.0b1",
     "yt-dlp==2026.2.4",
     "libtorrent==2.0.11; python_version < '3.14'",
-    'libtorrent @ ./wheels/libtorrent-2.0.11-cp314-cp314-linux_x86_64.whl; python_version == "3.14" and platform_system == "Linux" and platform_machine == "x86_64"',
+    "libtorrent @ ./wheels/libtorrent-2.0.11-cp314-cp314-linux_x86_64.whl; python_version == '3.14' and platform_system == 'Linux' and platform_machine == 'x86_64'",
     "requests==2.32.5",
     "aiortc==1.14.0",
+    "beautifulsoup4==4.13.3",
 ]
 
 [project.optional-dependencies]
@@ -66,6 +67,14 @@ vlm = [
 ]
 blockchain = [
     "web3==7.14.1",
+]
+tui = [
+    "textual >= 0.40.0",
+    "plotille >= 4.0.0",
+    "tomli >= 2.0.0",
+]
+all = [
+    "haven-cli[media,vlm,blockchain,tui]",
 ]
 dev = [
     "pytest==9.0.2",
@@ -86,7 +95,7 @@ Issues = "https://github.com/haven/haven-cli/issues"
 Source = "https://github.com/haven/haven-cli"
 
 [tool.hatch.build.targets.wheel]
-packages = ["haven_cli"]
+packages = ["haven_cli", "haven_tui"]
 
 [tool.ruff]
 target-version = "py311"

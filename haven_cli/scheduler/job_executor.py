@@ -393,7 +393,18 @@ class JobExecutor:
         
         from haven_cli.pipeline.context import PipelineContext
         
-        # Create pipeline context with source metadata
+        # Get pipeline config values to pass to context options
+        pipeline_config = self._config.get("pipeline", None)
+        
+        # Helper to get config value from PipelineConfig object or dict
+        def get_config_value(name, default):
+            if pipeline_config is None:
+                return default
+            if hasattr(pipeline_config, name):
+                return getattr(pipeline_config, name, default)
+            return pipeline_config.get(name, default) if isinstance(pipeline_config, dict) else default
+        
+        # Create pipeline context with source metadata and pipeline config
         context = PipelineContext(
             source_path=Path(output_path),
             options={
@@ -401,6 +412,13 @@ class JobExecutor:
                 "plugin_name": job.plugin_name,
                 "source_id": source.source_id,
                 "source_uri": source.uri,
+                # Pipeline config values for conditional steps
+                # Note: option names must match enabled_option in each step
+                "vlm_enabled": get_config_value("vlm_enabled", False),
+                "encrypt": get_config_value("encryption_enabled", False),
+                "upload_enabled": get_config_value("upload_enabled", True),
+                "arkiv_sync_enabled": get_config_value("sync_enabled", False) or get_config_value("arkiv_sync_enabled", False),
+                # Source and job metadata
                 **source.metadata,
                 **job.metadata,
             },

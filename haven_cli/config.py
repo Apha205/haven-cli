@@ -125,28 +125,52 @@ class BlockchainConfig:
 class PipelineConfig:
     """Configuration for the processing pipeline."""
     
-    # VLM Analysis
+    # VLM Analysis - Core Settings
+    # Matches backend AppConfig defaults
     vlm_enabled: bool = True
-    vlm_model: str = "gpt-4-vision-preview"
+    vlm_model: str = "zai-org/glm-4.6v-flash"  # Matches backend llm_model default
     vlm_api_key: Optional[str] = None
-    vlm_timeout: float = 120.0
+    vlm_timeout: float = 70.0  # Matches backend request_timeout
+    
+    # VLM Analysis - Tags Configuration (comma-separated list of tags to detect)
+    # Matches backend AppConfig.analysis_tags default
+    vlm_analysis_tags: str = "person,car,bicycle,motorcycle,airplane,bus,train,truck,boat,traffic_light,stop_sign,walking,running,standing,sitting,talking,eating,drinking,phone,laptop,book,bag,umbrella,skateboard,surfboard,tennis_racket"
+    
+    # VLM Analysis - Processing Parameters
+    # Matches backend AppConfig defaults
+    vlm_frame_interval: float = 2.0  # Seconds between frame samples
+    vlm_threshold: float = 0.5  # Confidence threshold for tag detection (0-1)
+    vlm_return_timestamps: bool = True  # Include timestamp information in results
+    vlm_return_confidence: bool = True  # Include confidence scores in results
+    
+    # VLM Analysis - Advanced Settings
+    vlm_max_new_tokens: int = 128  # Matches backend model config
+    vlm_detected_tag_confidence: float = 0.99  # Matches backend vlm_detected_tag_confidence
+    
+    # VLM Multiplexer - Load Balancing Configuration
+    # Multiplexer is the ONLY supported method for VLM processing
+    vlm_multiplexer_enabled: bool = True  # Enabled by default with localhost endpoint
+    vlm_max_concurrent_requests: int = 15  # Matches backend vlm_max_concurrent_requests
+    # Default endpoint: local LLM server (e.g., LM Studio, LocalAI)
+    vlm_multiplexer_endpoints: List[Dict[str, Any]] = field(default_factory=lambda: [
+        {"base_url": "http://localhost:1234/v1", "name": "local-llm", "weight": 1, "max_concurrent": 5}
+    ])
     
     # Encryption (Lit Protocol)
-    # Note: lit_network is now derived from blockchain.network_mode
+    # Note: Lit network is derived from blockchain.network_mode
     # Set blockchain.lit_network_override to override
     encryption_enabled: bool = True
-    lit_network: str = "datil-dev"  # Deprecated: use blockchain.network_mode
     
     # Upload (Filecoin via Synapse)
-    # Note: synapse_endpoint defaults from blockchain.network_mode
+    # Note: Synapse endpoint is derived from blockchain.network_mode
+    # Set blockchain.filecoin_rpc_override to override
+    # Note: Authentication via HAVEN_PRIVATE_KEY environment variable ONLY
     upload_enabled: bool = True
-    synapse_endpoint: Optional[str] = None
-    synapse_api_key: Optional[str] = None
     
     # Blockchain Sync (Arkiv)
-    # Note: arkiv_endpoint defaults from blockchain.network_mode
+    # Note: Arkiv endpoint is derived from blockchain.network_mode
+    # Set blockchain.arkiv_rpc_override to override
     sync_enabled: bool = True
-    arkiv_endpoint: Optional[str] = None
     arkiv_contract: Optional[str] = None
     
     # Processing
@@ -245,23 +269,15 @@ class HavenConfig:
         self._propagate_network_mode()
     
     def _propagate_network_mode(self) -> None:
-        """Propagate blockchain network mode to individual service configs.
+        """Validate and log blockchain network mode configuration.
         
-        This ensures that setting blockchain.network_mode automatically
-        updates all the individual blockchain service configurations
-        (Lit, Filecoin, Arkiv) unless they have explicit overrides.
+        Network endpoints (Lit, Filecoin, Arkiv) are now retrieved directly
+        from blockchain config methods (get_lit_network, get_filecoin_rpc_url,
+        get_arkiv_rpc_url) rather than being copied to pipeline config.
+        
+        This method now serves as a hook for any post-init validation
+        or logging related to network configuration.
         """
-        # Update Lit network if no override is set
-        if not self.blockchain.lit_network_override:
-            self.pipeline.lit_network = self.blockchain.get_lit_network()
-        
-        # Update Filecoin endpoint if not explicitly set
-        if not self.pipeline.synapse_endpoint and not self.blockchain.filecoin_rpc_override:
-            self.pipeline.synapse_endpoint = self.blockchain.get_filecoin_rpc_url()
-        
-        # Update Arkiv endpoint if not explicitly set
-        if not self.pipeline.arkiv_endpoint and not self.blockchain.arkiv_rpc_override:
-            self.pipeline.arkiv_endpoint = self.blockchain.get_arkiv_rpc_url()
 
 
 def load_config(
@@ -381,13 +397,60 @@ def _load_from_env(config: HavenConfig, prefix: str) -> HavenConfig:
     if env_val := os.environ.get(f"{prefix}ARKIV_RPC_OVERRIDE"):
         config.blockchain.arkiv_rpc_override = env_val
     
-    # Pipeline settings
+    # Pipeline settings - VLM Core
     if env_val := os.environ.get(f"{prefix}VLM_ENABLED"):
         config.pipeline.vlm_enabled = env_val.lower() in ("true", "1", "yes")
     if env_val := os.environ.get(f"{prefix}VLM_MODEL"):
         config.pipeline.vlm_model = env_val
     if env_val := os.environ.get(f"{prefix}VLM_API_KEY"):
         config.pipeline.vlm_api_key = env_val
+    # Note: VLM_BASE_URL removed - use vlm_multiplexer_endpoints instead
+    if env_val := os.environ.get(f"{prefix}VLM_TIMEOUT"):
+        try:
+            config.pipeline.vlm_timeout = float(env_val)
+        except ValueError:
+            pass
+    
+    # Pipeline settings - VLM Tags
+    if env_val := os.environ.get(f"{prefix}VLM_ANALYSIS_TAGS"):
+        config.pipeline.vlm_analysis_tags = env_val
+    
+    # Pipeline settings - VLM Processing Parameters
+    if env_val := os.environ.get(f"{prefix}VLM_FRAME_INTERVAL"):
+        try:
+            config.pipeline.vlm_frame_interval = float(env_val)
+        except ValueError:
+            pass
+    if env_val := os.environ.get(f"{prefix}VLM_THRESHOLD"):
+        try:
+            config.pipeline.vlm_threshold = float(env_val)
+        except ValueError:
+            pass
+    if env_val := os.environ.get(f"{prefix}VLM_RETURN_TIMESTAMPS"):
+        config.pipeline.vlm_return_timestamps = env_val.lower() in ("true", "1", "yes")
+    if env_val := os.environ.get(f"{prefix}VLM_RETURN_CONFIDENCE"):
+        config.pipeline.vlm_return_confidence = env_val.lower() in ("true", "1", "yes")
+    
+    # Pipeline settings - VLM Advanced
+    if env_val := os.environ.get(f"{prefix}VLM_MAX_NEW_TOKENS"):
+        try:
+            config.pipeline.vlm_max_new_tokens = int(env_val)
+        except ValueError:
+            pass
+    if env_val := os.environ.get(f"{prefix}VLM_DETECTED_TAG_CONFIDENCE"):
+        try:
+            config.pipeline.vlm_detected_tag_confidence = float(env_val)
+        except ValueError:
+            pass
+    
+    # Pipeline settings - VLM Multiplexer
+    if env_val := os.environ.get(f"{prefix}VLM_MULTIPLEXER_ENABLED"):
+        config.pipeline.vlm_multiplexer_enabled = env_val.lower() in ("true", "1", "yes")
+    if env_val := os.environ.get(f"{prefix}VLM_MAX_CONCURRENT_REQUESTS"):
+        try:
+            config.pipeline.vlm_max_concurrent_requests = int(env_val)
+        except ValueError:
+            pass
     
     if env_val := os.environ.get(f"{prefix}ENCRYPTION_ENABLED"):
         config.pipeline.encryption_enabled = env_val.lower() in ("true", "1", "yes")
@@ -397,13 +460,13 @@ def _load_from_env(config: HavenConfig, prefix: str) -> HavenConfig:
     
     if env_val := os.environ.get(f"{prefix}UPLOAD_ENABLED"):
         config.pipeline.upload_enabled = env_val.lower() in ("true", "1", "yes")
-    if env_val := os.environ.get(f"{prefix}SYNAPSE_ENDPOINT"):
-        config.pipeline.synapse_endpoint = env_val
-    if env_val := os.environ.get(f"{prefix}SYNAPSE_API_KEY"):
-        config.pipeline.synapse_api_key = env_val
+    # Note: Filecoin RPC endpoint is configured via blockchain.filecoin_rpc_override
+    # or HAVEN_FILECOIN_RPC_OVERRIDE environment variable
     
     if env_val := os.environ.get(f"{prefix}SYNC_ENABLED"):
         config.pipeline.sync_enabled = env_val.lower() in ("true", "1", "yes")
+    # Note: Arkiv RPC endpoint is configured via blockchain.arkiv_rpc_override
+    # or HAVEN_ARKIV_RPC_OVERRIDE environment variable
     
     # Scheduler settings
     if env_val := os.environ.get(f"{prefix}SCHEDULER_ENABLED"):
@@ -467,8 +530,16 @@ def save_config(config: HavenConfig, path: Optional[Path] = None) -> None:
         "[pipeline]",
         f"vlm_enabled = {str(config.pipeline.vlm_enabled).lower()}",
         f'vlm_model = "{config.pipeline.vlm_model}"',
+        f'vlm_analysis_tags = "{config.pipeline.vlm_analysis_tags}"',
+        f"vlm_frame_interval = {config.pipeline.vlm_frame_interval}",
+        f"vlm_threshold = {config.pipeline.vlm_threshold}",
+        f"vlm_return_timestamps = {str(config.pipeline.vlm_return_timestamps).lower()}",
+        f"vlm_return_confidence = {str(config.pipeline.vlm_return_confidence).lower()}",
+        f"vlm_max_new_tokens = {config.pipeline.vlm_max_new_tokens}",
+        f"vlm_detected_tag_confidence = {config.pipeline.vlm_detected_tag_confidence}",
+        f"vlm_multiplexer_enabled = {str(config.pipeline.vlm_multiplexer_enabled).lower()}",
+        f"vlm_max_concurrent_requests = {config.pipeline.vlm_max_concurrent_requests}",
         f"encryption_enabled = {str(config.pipeline.encryption_enabled).lower()}",
-        f'lit_network = "{config.pipeline.lit_network}"  # Auto-set from blockchain.network_mode',
         f"upload_enabled = {str(config.pipeline.upload_enabled).lower()}",
         f"sync_enabled = {str(config.pipeline.sync_enabled).lower()}",
         f"max_concurrent_videos = {config.pipeline.max_concurrent_videos}",
@@ -642,42 +713,108 @@ def validate_config(config: Optional[HavenConfig] = None) -> List[ValidationErro
     errors: List[ValidationError] = []
     
     # Pipeline validation
-    # VLM API key check (warning if not set)
-    if not config.pipeline.vlm_api_key:
-        errors.append(ValidationError(
-            field="pipeline.vlm_api_key",
-            message="VLM API key not set. VLM analysis may fail.",
-            severity="warning"
-        ))
-    
-    # Synapse endpoint validation (if upload enabled)
-    if config.pipeline.upload_enabled:
-        if not config.pipeline.synapse_endpoint:
+    # VLM API key check (warning if not set and not using local model)
+    # Note: When multiplexer is enabled, API keys should be configured per-endpoint
+    if config.pipeline.vlm_enabled and not config.pipeline.vlm_api_key:
+        if not config.pipeline.vlm_multiplexer_enabled:
             errors.append(ValidationError(
-                field="pipeline.synapse_endpoint",
-                message="Synapse endpoint not set but upload is enabled.",
+                field="pipeline.vlm_api_key",
+                message="VLM API key not set. VLM analysis may fail.",
                 severity="warning"
             ))
-        elif config.pipeline.synapse_endpoint and not _validate_url(config.pipeline.synapse_endpoint):
+    
+    # VLM processing parameters validation
+    if not 0 <= config.pipeline.vlm_threshold <= 1:
+        errors.append(ValidationError(
+            field="pipeline.vlm_threshold",
+            message=f"VLM threshold must be between 0 and 1, got {config.pipeline.vlm_threshold}",
+            severity="error"
+        ))
+    
+    if config.pipeline.vlm_frame_interval <= 0:
+        errors.append(ValidationError(
+            field="pipeline.vlm_frame_interval",
+            message=f"VLM frame interval must be positive, got {config.pipeline.vlm_frame_interval}",
+            severity="error"
+        ))
+    
+    if not 0 <= config.pipeline.vlm_detected_tag_confidence <= 1:
+        errors.append(ValidationError(
+            field="pipeline.vlm_detected_tag_confidence",
+            message=f"VLM detected tag confidence must be between 0 and 1, got {config.pipeline.vlm_detected_tag_confidence}",
+            severity="error"
+        ))
+    
+    if config.pipeline.vlm_max_concurrent_requests <= 0:
+        errors.append(ValidationError(
+            field="pipeline.vlm_max_concurrent_requests",
+            message=f"VLM max concurrent requests must be positive, got {config.pipeline.vlm_max_concurrent_requests}",
+            severity="error"
+        ))
+    
+    # VLM multiplexer validation
+    if config.pipeline.vlm_multiplexer_enabled:
+        if not config.pipeline.vlm_multiplexer_endpoints:
             errors.append(ValidationError(
-                field="pipeline.synapse_endpoint",
-                message=f"Invalid URL format: {config.pipeline.synapse_endpoint}",
+                field="pipeline.vlm_multiplexer_endpoints",
+                message="Multiplexer is enabled but no endpoints configured. "
+                        "Add endpoints to your config:\n"
+                        "  [[pipeline.vlm_multiplexer_endpoints]]\n"
+                        "  base_url = \"http://your-server:1234/v1\"\n"
+                        "  name = \"default\"\n"
+                        "  weight = 1\n"
+                        "  max_concurrent = 5\n"
+                        "Or set vlm_multiplexer_enabled = false to disable multiplexer.",
+                severity="error"
+            ))
+        else:
+            for i, ep in enumerate(config.pipeline.vlm_multiplexer_endpoints):
+                if not ep.get("base_url"):
+                    errors.append(ValidationError(
+                        field=f"pipeline.vlm_multiplexer_endpoints[{i}].base_url",
+                        message="Multiplexer endpoint base_url is required",
+                        severity="error"
+                    ))
+                if ep.get("weight", 1) <= 0:
+                    errors.append(ValidationError(
+                        field=f"pipeline.vlm_multiplexer_endpoints[{i}].weight",
+                        message="Multiplexer endpoint weight must be positive",
+                        severity="error"
+                    ))
+                if ep.get("max_concurrent", 5) <= 0:
+                    errors.append(ValidationError(
+                        field=f"pipeline.vlm_multiplexer_endpoints[{i}].max_concurrent",
+                        message="Multiplexer endpoint max_concurrent must be positive",
+                        severity="error"
+                    ))
+    
+    # Upload validation (if enabled)
+    if config.pipeline.upload_enabled:
+        # Validate Filecoin RPC override if set
+        if config.blockchain.filecoin_rpc_override and not _validate_url(config.blockchain.filecoin_rpc_override):
+            errors.append(ValidationError(
+                field="blockchain.filecoin_rpc_override",
+                message=f"Invalid URL format: {config.blockchain.filecoin_rpc_override}",
                 severity="error"
             ))
         
-        if not config.pipeline.synapse_api_key:
+        # Authentication: HAVEN_PRIVATE_KEY environment variable REQUIRED
+        if not os.environ.get("HAVEN_PRIVATE_KEY"):
             errors.append(ValidationError(
-                field="pipeline.synapse_api_key",
-                message="Synapse API key not set but upload is enabled.",
-                severity="warning"
+                field="HAVEN_PRIVATE_KEY",
+                message="HAVEN_PRIVATE_KEY environment variable not set. "
+                        "Upload to Filecoin requires a private key for blockchain authentication. "
+                        "Set it with: export HAVEN_PRIVATE_KEY=0x...",
+                severity="error"
             ))
     
-    # Arkiv endpoint validation (if sync enabled)
+    # Sync validation (if enabled)
     if config.pipeline.sync_enabled:
-        if config.pipeline.arkiv_endpoint and not _validate_url(config.pipeline.arkiv_endpoint):
+        # Validate Arkiv RPC override if set
+        if config.blockchain.arkiv_rpc_override and not _validate_url(config.blockchain.arkiv_rpc_override):
             errors.append(ValidationError(
-                field="pipeline.arkiv_endpoint",
-                message=f"Invalid URL format: {config.pipeline.arkiv_endpoint}",
+                field="blockchain.arkiv_rpc_override",
+                message=f"Invalid URL format: {config.blockchain.arkiv_rpc_override}",
                 severity="error"
             ))
     
@@ -777,13 +914,19 @@ def _config_to_dict(config: HavenConfig, mask_secrets: bool = True) -> dict[str,
             "vlm_model": config.pipeline.vlm_model,
             "vlm_api_key": mask_value("vlm_api_key", config.pipeline.vlm_api_key),
             "vlm_timeout": config.pipeline.vlm_timeout,
+            "vlm_analysis_tags": config.pipeline.vlm_analysis_tags,
+            "vlm_frame_interval": config.pipeline.vlm_frame_interval,
+            "vlm_threshold": config.pipeline.vlm_threshold,
+            "vlm_return_timestamps": config.pipeline.vlm_return_timestamps,
+            "vlm_return_confidence": config.pipeline.vlm_return_confidence,
+            "vlm_max_new_tokens": config.pipeline.vlm_max_new_tokens,
+            "vlm_detected_tag_confidence": config.pipeline.vlm_detected_tag_confidence,
+            "vlm_multiplexer_enabled": config.pipeline.vlm_multiplexer_enabled,
+            "vlm_max_concurrent_requests": config.pipeline.vlm_max_concurrent_requests,
+            "vlm_multiplexer_endpoints": config.pipeline.vlm_multiplexer_endpoints,
             "encryption_enabled": config.pipeline.encryption_enabled,
-            "lit_network": config.pipeline.lit_network,
             "upload_enabled": config.pipeline.upload_enabled,
-            "synapse_endpoint": config.pipeline.synapse_endpoint,
-            "synapse_api_key": mask_value("synapse_api_key", config.pipeline.synapse_api_key),
             "sync_enabled": config.pipeline.sync_enabled,
-            "arkiv_endpoint": config.pipeline.arkiv_endpoint,
             "arkiv_contract": config.pipeline.arkiv_contract,
             "max_concurrent_videos": config.pipeline.max_concurrent_videos,
             "retry_attempts": config.pipeline.retry_attempts,

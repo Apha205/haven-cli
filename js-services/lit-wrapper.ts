@@ -49,6 +49,11 @@ declare const Deno: {
 type LitClient = any;
 
 /**
+ * Progress callback type for encryption/decryption operations
+ */
+export type ProgressCallback = (percent: number, message: string, bytesProcessed: number, totalBytes: number) => void;
+
+/**
  * Lit Protocol wrapper interface.
  */
 export interface LitWrapper {
@@ -58,8 +63,8 @@ export interface LitWrapper {
   encrypt(params: Record<string, unknown>): Promise<LitEncryptResult>;
   decrypt(params: Record<string, unknown>): Promise<LitDecryptResult>;
   getSession(): Promise<LitSessionResult>;
-  encryptFile(params: Record<string, unknown>): Promise<LitEncryptFileResult>;
-  decryptFile(params: Record<string, unknown>): Promise<LitDecryptFileResult>;
+  encryptFile(params: Record<string, unknown>, onProgress?: ProgressCallback): Promise<LitEncryptFileResult>;
+  decryptFile(params: Record<string, unknown>, onProgress?: ProgressCallback): Promise<LitDecryptFileResult>;
 }
 
 /**
@@ -282,7 +287,7 @@ class LitWrapperImpl implements LitWrapper {
     };
   }
 
-  async encryptFile(params: Record<string, unknown>): Promise<LitEncryptFileResult> {
+  async encryptFile(params: Record<string, unknown>, onProgress?: ProgressCallback): Promise<LitEncryptFileResult> {
     if (!this.isConnected) {
       throw new Error('Lit Protocol not connected');
     }
@@ -308,13 +313,18 @@ class LitWrapperImpl implements LitWrapper {
       // Create a proper ArrayBuffer from the Uint8Array
       const fileBuffer = new Uint8Array(fileData).buffer;
 
-      // Use hybrid encryption
+      // Use hybrid encryption with progress callback
       // Pass network to ensure consistent client initialization
       const { encryptedFile, metadata } = await hybridEncryptFile(
         fileBuffer as ArrayBuffer,
         privateKey,
         chain,
-        (message) => console.error(`[lit-wrapper] ${message}`),
+        (percent, message, bytesProcessed, totalBytes) => {
+          // Log to stderr for debugging
+          console.error(`[lit-wrapper] ${percent.toFixed(1)}% - ${message}`);
+          // Forward to progress callback if provided
+          onProgress?.(percent, message, bytesProcessed, totalBytes);
+        },
         this._network
       );
 
@@ -341,7 +351,7 @@ class LitWrapperImpl implements LitWrapper {
     }
   }
 
-  async decryptFile(params: Record<string, unknown>): Promise<LitDecryptFileResult> {
+  async decryptFile(params: Record<string, unknown>, onProgress?: ProgressCallback): Promise<LitDecryptFileResult> {
     if (!this.isConnected) {
       throw new Error('Lit Protocol not connected');
     }
@@ -376,13 +386,18 @@ class LitWrapperImpl implements LitWrapper {
       const metadataJson = new TextDecoder().decode(metadataBytes);
       const metadata = deserializeHybridMetadata(metadataJson);
 
-      // Decrypt using hybrid encryption
+      // Decrypt using hybrid encryption with progress callback
       // Pass network to enable payment verification on mainnet
       const decryptedData = await hybridDecryptFile(
         encryptedData,
         metadata,
         privateKey,
-        (message) => console.error(`[lit-wrapper] ${message}`),
+        (percent, message, bytesProcessed, totalBytes) => {
+          // Log to stderr for debugging
+          console.error(`[lit-wrapper] ${percent.toFixed(1)}% - ${message}`);
+          // Forward to progress callback if provided
+          onProgress?.(percent, message, bytesProcessed, totalBytes);
+        },
         this._network
       );
 

@@ -136,14 +136,44 @@ const methods: MethodRegistry = {
     if (!litWrapper?.isConnected) {
       throw new Error('Lit Protocol not connected');
     }
-    return await litWrapper.encryptFile(params as Record<string, unknown>);
+    const encryptParams = params as Record<string, unknown>;
+    
+    // If progress notifications are requested, set up callback
+    if (encryptParams.onProgress) {
+      return await litWrapper.encryptFile(encryptParams, (percent, message, bytesProcessed, totalBytes) => {
+        sendNotification('lit.encryptProgress', {
+          percent,
+          message,
+          bytesProcessed,
+          totalBytes,
+          percentage: Math.round(percent), // For compatibility
+        });
+      });
+    }
+    
+    return await litWrapper.encryptFile(encryptParams);
   },
 
   'lit.decryptFile': async (params: unknown) => {
     if (!litWrapper?.isConnected) {
       throw new Error('Lit Protocol not connected');
     }
-    return await litWrapper.decryptFile(params as Record<string, unknown>);
+    const decryptParams = params as Record<string, unknown>;
+    
+    // If progress notifications are requested, set up callback
+    if (decryptParams.onProgress) {
+      return await litWrapper.decryptFile(decryptParams, (percent, message, bytesProcessed, totalBytes) => {
+        sendNotification('lit.decryptProgress', {
+          percent,
+          message,
+          bytesProcessed,
+          totalBytes,
+          percentage: Math.round(percent), // For compatibility
+        });
+      });
+    }
+    
+    return await litWrapper.decryptFile(decryptParams);
   },
 
   // Synapse SDK methods

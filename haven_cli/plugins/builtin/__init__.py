@@ -4,5 +4,6 @@ This module contains the built-in plugin implementations that ship with Haven CL
 """
 
 from haven_cli.plugins.builtin.youtube import YouTubePlugin
+from haven_cli.plugins.builtin.bittorrent import BitTorrentPlugin
 
-__all__ = ["YouTubePlugin"]
+__all__ = ["YouTubePlugin", "BitTorrentPlugin"]

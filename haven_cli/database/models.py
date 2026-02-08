@@ -12,6 +12,7 @@ from uuid import UUID
 from sqlalchemy import (
     Column,
     Integer,
+    BigInteger,
     String,
     Boolean,
     Float,
@@ -100,6 +101,55 @@ class Video(Base):
         back_populates="video", 
         cascade="all, delete-orphan",
         lazy="selectin"
+    )
+    
+    # Pipeline observability relationships (Task 1.1)
+    downloads: Mapped[List["Download"]] = relationship(
+        "Download",
+        back_populates="video",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        order_by="Download.created_at.desc()"
+    )
+    
+    encryption_jobs: Mapped[List["EncryptionJob"]] = relationship(
+        "EncryptionJob",
+        back_populates="video",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        order_by="EncryptionJob.created_at.desc()"
+    )
+    
+    upload_jobs: Mapped[List["UploadJob"]] = relationship(
+        "UploadJob",
+        back_populates="video",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        order_by="UploadJob.created_at.desc()"
+    )
+    
+    sync_jobs: Mapped[List["SyncJob"]] = relationship(
+        "SyncJob",
+        back_populates="video",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        order_by="SyncJob.created_at.desc()"
+    )
+    
+    analysis_jobs: Mapped[List["AnalysisJob"]] = relationship(
+        "AnalysisJob",
+        back_populates="video",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        order_by="AnalysisJob.created_at.desc()"
+    )
+    
+    pipeline_snapshot: Mapped[Optional["PipelineSnapshot"]] = relationship(
+        "PipelineSnapshot",
+        back_populates="video",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        uselist=False
     )
     
     def to_dict(self) -> Dict[str, Any]:
@@ -314,6 +364,557 @@ class RecurringJob(Base):
         }
 
 
+# ============================================================================
+# Pipeline Observability Models (Task 1.1)
+# ============================================================================
+
+class Download(Base):
+    """Tracks download progress for any source type (YouTube or BitTorrent)."""
+    __tablename__ = "downloads"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    video_id: Mapped[int] = mapped_column(
+        Integer, 
+        ForeignKey("videos.id"), 
+        nullable=False,
+        index=True
+    )
+    source_type: Mapped[str] = mapped_column(String, nullable=False)  # "youtube" | "torrent"
+    
+    # Common progress fields
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    progress_percent: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    bytes_downloaded: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    bytes_total: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    download_rate: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # bytes/sec
+    eta_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    
+    # Timing
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    failed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    
+    # Source-specific data (JSON for flexibility)
+    source_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    
+    # Relationship
+    video: Mapped["Video"] = relationship("Video", back_populates="downloads")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert download to dictionary representation."""
+        return {
+            "id": self.id,
+            "video_id": self.video_id,
+            "source_type": self.source_type,
+            "status": self.status,
+            "progress_percent": self.progress_percent,
+            "bytes_downloaded": self.bytes_downloaded,
+            "bytes_total": self.bytes_total,
+            "download_rate": self.download_rate,
+            "eta_seconds": self.eta_seconds,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "failed_at": self.failed_at.isoformat() if self.failed_at else None,
+            "error_message": self.error_message,
+            "source_metadata": self.source_metadata,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class EncryptionJob(Base):
+    """Tracks encryption progress for videos."""
+    __tablename__ = "encryption_jobs"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    video_id: Mapped[int] = mapped_column(
+        Integer, 
+        ForeignKey("videos.id"), 
+        nullable=False,
+        index=True
+    )
+    
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    progress_percent: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    
+    # Progress tracking
+    bytes_processed: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    bytes_total: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    encrypt_speed: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # bytes/sec
+    
+    # Lit Protocol specific
+    lit_cid: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    access_control_conditions: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    
+    # Timing
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    
+    # Relationship
+    video: Mapped["Video"] = relationship("Video", back_populates="encryption_jobs")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert encryption job to dictionary representation."""
+        return {
+            "id": self.id,
+            "video_id": self.video_id,
+            "status": self.status,
+            "progress_percent": self.progress_percent,
+            "bytes_processed": self.bytes_processed,
+            "bytes_total": self.bytes_total,
+            "encrypt_speed": self.encrypt_speed,
+            "lit_cid": self.lit_cid,
+            "access_control_conditions": self.access_control_conditions,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "error_message": self.error_message,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class UploadJob(Base):
+    """Tracks upload progress to storage backends."""
+    __tablename__ = "upload_jobs"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    video_id: Mapped[int] = mapped_column(
+        Integer, 
+        ForeignKey("videos.id"), 
+        nullable=False,
+        index=True
+    )
+    
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    target: Mapped[str] = mapped_column(String, nullable=False)  # "ipfs" | "arkiv" | "s3"
+    
+    progress_percent: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    bytes_uploaded: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    bytes_total: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    upload_speed: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # bytes/sec
+    
+    # Result
+    remote_cid: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    remote_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    
+    # Timing
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    
+    # Relationship
+    video: Mapped["Video"] = relationship("Video", back_populates="upload_jobs")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert upload job to dictionary representation."""
+        return {
+            "id": self.id,
+            "video_id": self.video_id,
+            "status": self.status,
+            "target": self.target,
+            "progress_percent": self.progress_percent,
+            "bytes_uploaded": self.bytes_uploaded,
+            "bytes_total": self.bytes_total,
+            "upload_speed": self.upload_speed,
+            "remote_cid": self.remote_cid,
+            "remote_url": self.remote_url,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "error_message": self.error_message,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class SyncJob(Base):
+    """Tracks blockchain synchronization progress."""
+    __tablename__ = "sync_jobs"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    video_id: Mapped[int] = mapped_column(
+        Integer, 
+        ForeignKey("videos.id"), 
+        nullable=False,
+        index=True
+    )
+    
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    
+    # Transaction tracking
+    tx_hash: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    block_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    gas_used: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    
+    # Timing
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    
+    # Relationship
+    video: Mapped["Video"] = relationship("Video", back_populates="sync_jobs")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert sync job to dictionary representation."""
+        return {
+            "id": self.id,
+            "video_id": self.video_id,
+            "status": self.status,
+            "tx_hash": self.tx_hash,
+            "block_number": self.block_number,
+            "gas_used": self.gas_used,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "error_message": self.error_message,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class AnalysisJob(Base):
+    """Tracks VLM/LLM analysis progress."""
+    __tablename__ = "analysis_jobs"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    video_id: Mapped[int] = mapped_column(
+        Integer, 
+        ForeignKey("videos.id"), 
+        nullable=False,
+        index=True
+    )
+    
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    
+    # Frame-level progress
+    frames_processed: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    frames_total: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    progress_percent: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    
+    # Analysis configuration
+    analysis_type: Mapped[str] = mapped_column(String, nullable=False)  # "vlm" | "llm"
+    model_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    
+    # Results reference
+    output_file: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    
+    # Timing
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    
+    # Relationship
+    video: Mapped["Video"] = relationship("Video", back_populates="analysis_jobs")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert analysis job to dictionary representation."""
+        return {
+            "id": self.id,
+            "video_id": self.video_id,
+            "status": self.status,
+            "frames_processed": self.frames_processed,
+            "frames_total": self.frames_total,
+            "progress_percent": self.progress_percent,
+            "analysis_type": self.analysis_type,
+            "model_name": self.model_name,
+            "output_file": self.output_file,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "error_message": self.error_message,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class PipelineSnapshot(Base):
+    """Pre-computed pipeline state for TUI queries.
+    
+    Updated frequently by pipeline steps so TUI can query a single row
+    per video instead of joining multiple tables.
+    """
+    __tablename__ = "pipeline_snapshots"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    video_id: Mapped[int] = mapped_column(
+        Integer, 
+        ForeignKey("videos.id"), 
+        nullable=False,
+        unique=True,
+        index=True
+    )
+    
+    # Current stage (derived from job statuses)
+    current_stage: Mapped[str] = mapped_column(String, nullable=False)
+    overall_status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    
+    # Progress for current stage
+    stage_progress_percent: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    stage_speed: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # bytes/sec
+    stage_eta: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)   # seconds
+    
+    # Aggregate metrics
+    total_bytes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    downloaded_bytes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    encrypted_bytes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    uploaded_bytes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    
+    # Error state
+    has_error: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    error_stage: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    
+    # Timestamps
+    stage_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    pipeline_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    pipeline_completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    
+    # Relationship
+    video: Mapped["Video"] = relationship("Video", back_populates="pipeline_snapshot")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert pipeline snapshot to dictionary representation."""
+        return {
+            "id": self.id,
+            "video_id": self.video_id,
+            "current_stage": self.current_stage,
+            "overall_status": self.overall_status,
+            "stage_progress_percent": self.stage_progress_percent,
+            "stage_speed": self.stage_speed,
+            "stage_eta": self.stage_eta,
+            "total_bytes": self.total_bytes,
+            "downloaded_bytes": self.downloaded_bytes,
+            "encrypted_bytes": self.encrypted_bytes,
+            "uploaded_bytes": self.uploaded_bytes,
+            "has_error": self.has_error,
+            "error_stage": self.error_stage,
+            "error_message": self.error_message,
+            "stage_started_at": self.stage_started_at.isoformat() if self.stage_started_at else None,
+            "pipeline_started_at": self.pipeline_started_at.isoformat() if self.pipeline_started_at else None,
+            "pipeline_completed_at": self.pipeline_completed_at.isoformat() if self.pipeline_completed_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class SpeedHistory(Base):
+    """Time-series data for speed graphs in TUI."""
+    __tablename__ = "speed_history"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    video_id: Mapped[int] = mapped_column(
+        Integer, 
+        ForeignKey("videos.id"), 
+        nullable=False,
+        index=True
+    )
+    stage: Mapped[str] = mapped_column(String, nullable=False)  # "download" | "encrypt" | "upload"
+    
+    # Metrics at this point in time
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime, 
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True
+    )
+    speed: Mapped[int] = mapped_column(Integer, nullable=False)  # bytes/sec
+    progress: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)  # 0-100
+    bytes_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    
+    # Composite index for time-range queries
+    __table_args__ = (
+        Index('ix_speed_history_video_stage_time', 'video_id', 'stage', 'timestamp'),
+    )
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert speed history entry to dictionary representation."""
+        return {
+            "id": self.id,
+            "video_id": self.video_id,
+            "stage": self.stage,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            "speed": self.speed,
+            "progress": self.progress,
+            "bytes_processed": self.bytes_processed,
+        }
+
+
 # Additional indexes for common queries
 Index("ix_videos_created_at", Video.created_at.desc())
 Index("ix_job_executions_started_at", JobExecution.started_at.desc())
+Index("ix_downloads_status", Download.status)
+Index("ix_downloads_video_status", Download.video_id, Download.status)
+Index("ix_encryption_jobs_status", EncryptionJob.status)
+Index("ix_upload_jobs_status", UploadJob.status)
+Index("ix_sync_jobs_status", SyncJob.status)
+Index("ix_analysis_jobs_status", AnalysisJob.status)
+Index("ix_pipeline_snapshots_status", PipelineSnapshot.overall_status)
+
+
+class TorrentDownload(Base):
+    """
+    BitTorrent download state tracking model.
+    
+    Tracks download state across restarts, supports resume capability,
+    and provides status queries for long-running torrent downloads.
+    """
+    
+    __tablename__ = "torrent_downloads"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    
+    # Torrent identification
+    infohash: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    source_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    title: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    magnet_uri: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    
+    # Download status: downloading, paused, completed, failed, stalled
+    status: Mapped[str] = mapped_column(String, nullable=False, default="downloading")
+    
+    # Progress tracking
+    progress: Mapped[float] = mapped_column(Float, default=0.0)
+    download_rate: Mapped[int] = mapped_column(Integer, default=0)  # bytes/sec
+    upload_rate: Mapped[int] = mapped_column(Integer, default=0)  # bytes/sec
+    peers: Mapped[int] = mapped_column(Integer, default=0)
+    seeds: Mapped[int] = mapped_column(Integer, default=0)
+    total_size: Mapped[int] = mapped_column(BigInteger, default=0)
+    downloaded_size: Mapped[int] = mapped_column(BigInteger, default=0)
+    
+    # File information
+    output_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    selected_file_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    
+    # Timing
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_activity: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    
+    # Error tracking
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    
+    # Resume data (libtorrent fast resume data as base64)
+    resume_data: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    
+    # Additional metadata
+    download_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSON, nullable=True, name="metadata"
+    )
+    
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert torrent download to dictionary representation."""
+        return {
+            "id": self.id,
+            "infohash": self.infohash,
+            "source_id": self.source_id,
+            "title": self.title,
+            "magnet_uri": self.magnet_uri,
+            "status": self.status,
+            "progress": self.progress,
+            "download_rate": self.download_rate,
+            "upload_rate": self.upload_rate,
+            "peers": self.peers,
+            "seeds": self.seeds,
+            "total_size": self.total_size,
+            "downloaded_size": self.downloaded_size,
+            "output_path": self.output_path,
+            "selected_file_index": self.selected_file_index,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "last_activity": self.last_activity.isoformat() if self.last_activity else None,
+            "error_message": self.error_message,
+            "metadata": self.download_metadata,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }

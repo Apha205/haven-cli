@@ -9,8 +9,12 @@ It:
 4. Records the entity key
 
 The step is conditional and can be skipped via the arkiv_sync_enabled option.
+
+Task 12: Writes progress to SyncJob and PipelineSnapshot tables.
 """
 
+import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from haven_cli.database.connection import get_db_session
@@ -43,7 +47,19 @@ class SyncStep(ConditionalStep):
         - entity_key: Arkiv entity key
         - transaction_hash: Blockchain transaction hash
         - is_update: Whether this was an update to existing entity
+    
+    Task 12: Creates/updates SyncJob and PipelineSnapshot records.
     """
+    
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        """Initialize the sync step.
+        
+        Args:
+            config: Step configuration (passed to base class)
+        """
+        super().__init__(config=config)
+        self._job_id: Optional[int] = None
+        self._start_time: Optional[float] = None
     
     @property
     def name(self) -> str:
@@ -92,6 +108,8 @@ class SyncStep(ConditionalStep):
     async def process(self, context: PipelineContext) -> StepResult:
         """Process Arkiv synchronization.
         
+        Task 12: Creates SyncJob and updates PipelineSnapshot.
+        
         Args:
             context: Pipeline context with upload result
             
@@ -99,6 +117,12 @@ class SyncStep(ConditionalStep):
             StepResult with sync details
         """
         video_path = context.video_path
+        self._start_time = time.time()
+        
+        # Create SyncJob record for tracking
+        if context.video_id:
+            self._job_id = await self._create_sync_job(context.video_id)
+            await self._update_pipeline_snapshot(context.video_id, "sync", 0)
         
         # Emit sync requested event
         await self._emit_event(EventType.SYNC_REQUESTED, context, {
@@ -128,11 +152,20 @@ class SyncStep(ConditionalStep):
             entity_key = result["entity_key"]
             transaction_hash = result.get("transaction_hash", "")
             is_update = result.get("is_update", False)
+            block_number = result.get("block_number")
+            gas_used = result.get("gas_used")
             
             context.arkiv_entity_key = entity_key
             
             # Update database with entity key
             await self._update_database(context, entity_key)
+            
+            # Mark job as completed
+            if self._job_id and context.video_id:
+                await self._complete_sync_job(
+                    self._job_id, transaction_hash, block_number, gas_used
+                )
+                await self._update_pipeline_snapshot(context.video_id, "sync", 100, status="completed")
             
             # Emit sync complete event
             await self._emit_event(EventType.SYNC_COMPLETE, context, {
@@ -161,10 +194,26 @@ class SyncStep(ConditionalStep):
                     "token_symbol": e.native_token_symbol,
                 }
             )
+            
+            # Mark job as failed
+            if self._job_id and context.video_id:
+                await self._fail_sync_job(self._job_id, str(e))
+                await self._update_pipeline_snapshot(
+                    context.video_id, "sync", 0, status="failed", error=str(e)
+                )
+            
             return StepResult.fail(self.name, error)
             
         except Exception as e:
             category = self._categorize_error(e)
+            error_msg = str(e)
+            
+            # Mark job as failed
+            if self._job_id and context.video_id:
+                await self._fail_sync_job(self._job_id, error_msg)
+                await self._update_pipeline_snapshot(
+                    context.video_id, "sync", 0, status="failed", error=error_msg
+                )
             
             return StepResult.fail(
                 self.name,
@@ -299,3 +348,117 @@ class SyncStep(ConditionalStep):
         import logging
         logger = logging.getLogger(__name__)
         logger.info("Sync step skipped: %s", reason)
+    
+    # =========================================================================
+    # Task 12: Job tracking helper methods
+    # =========================================================================
+    
+    async def _create_sync_job(self, video_id: int) -> Optional[int]:
+        """Create a SyncJob record for tracking.
+        
+        Args:
+            video_id: Video ID
+            
+        Returns:
+            Job ID or None if creation failed
+        """
+        try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.repositories import SyncJobRepository
+            
+            with get_db_session() as session:
+                repo = SyncJobRepository(session)
+                job = repo.create(
+                    video_id=video_id,
+                    status="syncing",
+                )
+                logger.debug(f"Created SyncJob {job.id} for video {video_id}")
+                return job.id
+        except Exception as e:
+            logger.warning(f"Failed to create SyncJob: {e}")
+            return None
+    
+    async def _complete_sync_job(
+        self,
+        job_id: int,
+        tx_hash: str,
+        block_number: Optional[int] = None,
+        gas_used: Optional[int] = None,
+    ) -> None:
+        """Mark SyncJob as completed.
+        
+        Args:
+            job_id: Job ID
+            tx_hash: Transaction hash
+            block_number: Block number (if available)
+            gas_used: Gas used (if available)
+        """
+        try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.repositories import SyncJobRepository
+            
+            with get_db_session() as session:
+                repo = SyncJobRepository(session)
+                repo.complete_sync(job_id, tx_hash, block_number or 0, gas_used)
+                logger.debug(f"Completed SyncJob {job_id}")
+        except Exception as e:
+            logger.warning(f"Failed to complete SyncJob: {e}")
+    
+    async def _fail_sync_job(self, job_id: int, error_message: str) -> None:
+        """Mark SyncJob as failed.
+        
+        Args:
+            job_id: Job ID
+            error_message: Error description
+        """
+        try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.models import SyncJob
+            
+            with get_db_session() as session:
+                job = session.query(SyncJob).filter(SyncJob.id == job_id).first()
+                if job:
+                    job.status = "failed"
+                    job.error_message = error_message
+                    session.commit()
+                logger.debug(f"Failed SyncJob {job_id}: {error_message}")
+        except Exception as e:
+            logger.warning(f"Failed to mark SyncJob as failed: {e}")
+    
+    async def _update_pipeline_snapshot(
+        self,
+        video_id: int,
+        stage: str,
+        progress_percent: float,
+        status: str = "active",
+        error: Optional[str] = None,
+    ) -> None:
+        """Update PipelineSnapshot for TUI dashboard.
+        
+        Args:
+            video_id: Video ID
+            stage: Current stage name
+            progress_percent: Stage progress (0-100)
+            status: Overall status
+            error: Error message if failed
+        """
+        try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.repositories import PipelineSnapshotRepository
+            
+            with get_db_session() as session:
+                repo = PipelineSnapshotRepository(session)
+                
+                if status == "failed" and error:
+                    repo.mark_error(video_id, stage, error)
+                elif status == "completed":
+                    repo.mark_completed(video_id)
+                else:
+                    repo.update_stage(
+                        video_id=video_id,
+                        stage=stage,
+                        status=status,
+                        progress_percent=progress_percent,
+                    )
+        except Exception as e:
+            logger.debug(f"Failed to update PipelineSnapshot: {e}")

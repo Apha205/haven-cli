@@ -83,12 +83,12 @@ class TestBuildArkivConfig:
         expected_expires = 4 * 7 * 24 * 60 * 60
         assert config.expires_in == expected_expires
     
-    @patch.dict(os.environ, {"FILECOIN_PRIVATE_KEY": "filecoin_key"}, clear=True)
-    def test_env_var_filecoin_key(self):
-        """Test reading private key from FILECOIN_PRIVATE_KEY env var."""
+    @patch.dict(os.environ, {"HAVEN_PRIVATE_KEY": "haven_key"}, clear=True)
+    def test_env_var_haven_key(self):
+        """Test reading private key from HAVEN_PRIVATE_KEY env var."""
         config = build_arkiv_config(enabled=True)
         
-        assert config.private_key == "filecoin_key"
+        assert config.private_key == "haven_key"
     
     @patch.dict(os.environ, {"ARKIV_PRIVATE_KEY": "arkiv_key"}, clear=True)
     def test_env_var_arkiv_key(self):
@@ -97,15 +97,7 @@ class TestBuildArkivConfig:
         
         assert config.private_key == "arkiv_key"
     
-    @patch.dict(os.environ, {
-        "FILECOIN_PRIVATE_KEY": "filecoin_key",
-        "ARKIV_PRIVATE_KEY": "arkiv_key"
-    }, clear=True)
-    def test_env_var_filecoin_takes_precedence(self):
-        """Test that FILECOIN_PRIVATE_KEY takes precedence over ARKIV_PRIVATE_KEY."""
-        config = build_arkiv_config(enabled=True)
-        
-        assert config.private_key == "filecoin_key"
+
     
     @patch.dict(os.environ, {"ARKIV_SYNC_ENABLED": "true"}, clear=True)
     def test_env_var_enabled_true(self):

@@ -29,6 +29,13 @@ from haven_cli.vlm.engine import (
     AnalysisConfig,
     create_vlm_engine,
 )
+from haven_cli.vlm.engine_compat import (
+    VLMEngine as BackendVLMEngine,
+    EngineConfig,
+    ModelConfig,
+    PipelineConfig,
+    create_engine_config,
+)
 from haven_cli.vlm.processor import (
     VLMProcessor,
     process_video,
@@ -62,7 +69,7 @@ from haven_cli.vlm.prompts import (
 )
 
 __all__ = [
-    # Engines
+    # Engines (legacy interface)
     "VLMEngine",
     "OpenAIVLMEngine",
     "GeminiVLMEngine",
@@ -70,6 +77,13 @@ __all__ = [
     "VLMResponse",
     "AnalysisConfig",
     "create_vlm_engine",
+    
+    # Backend-compatible interface (gold standard)
+    "BackendVLMEngine",
+    "EngineConfig",
+    "ModelConfig",
+    "PipelineConfig",
+    "create_engine_config",
     
     # Processor
     "VLMProcessor",

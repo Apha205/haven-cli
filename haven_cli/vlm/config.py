@@ -22,8 +22,7 @@ class VLMEngineConfig:
     Attributes:
         model_type: Type of model (openai, gemini, local)
         model_name: Specific model identifier
-        api_key: API key for the service
-        base_url: Base URL for API calls
+        api_key: API key for the service (deprecated: use multiplexer endpoints)
         timeout: Request timeout in seconds
         max_tokens: Maximum tokens in response
         max_concurrent: Maximum concurrent requests
@@ -32,7 +31,6 @@ class VLMEngineConfig:
     model_type: str = "openai"
     model_name: str = "zai-org/glm-4.6v-flash"
     api_key: Optional[str] = None
-    base_url: Optional[str] = None
     timeout: float = 120.0
     max_tokens: int = 4096
     max_concurrent: int = 5
@@ -104,6 +102,7 @@ class VLMConfig:
     """Complete VLM configuration.
     
     Combines engine, processing, and multiplexer configurations.
+    Matches the gold standard backend's VLM configuration structure.
     """
     
     engine: VLMEngineConfig = field(default_factory=VLMEngineConfig)
@@ -113,10 +112,19 @@ class VLMConfig:
     # Additional settings
     cache_enabled: bool = True
     cache_dir: Optional[Path] = None
+    
+    # Analysis tags - list of tags to detect in videos
+    analysis_tags: List[str] = field(default_factory=lambda: ["person", "car", "bicycle"])
+    
+    # Detected tag confidence threshold
+    detected_tag_confidence: float = 0.99
 
 
 def load_vlm_config() -> VLMConfig:
     """Load VLM configuration from Haven CLI config.
+    
+    This function translates Haven CLI's PipelineConfig settings into
+    VLMConfig format, matching the gold standard backend configuration.
     
     Returns:
         VLMConfig instance with loaded settings
@@ -127,28 +135,60 @@ def load_vlm_config() -> VLMConfig:
     # Determine model type from model name
     model_type = _infer_model_type(pipeline.vlm_model)
     
-    # Build engine config
+    # Parse analysis tags from comma-separated string
+    analysis_tags = [tag.strip() for tag in pipeline.vlm_analysis_tags.split(',') if tag.strip()]
+    
+    # Build engine config - matching backend's vlm_config.py structure
+    # Note: base_url removed - use multiplexer endpoints instead
     engine_config = VLMEngineConfig(
         model_type=model_type,
         model_name=pipeline.vlm_model,
         api_key=pipeline.vlm_api_key,
         timeout=pipeline.vlm_timeout,
+        max_tokens=pipeline.vlm_max_new_tokens,
+        max_concurrent=pipeline.vlm_max_concurrent_requests,
     )
     
-    # Build processing config
+    # Build processing config - matching backend's get_vlm_processing_params()
     processing_config = VLMProcessingConfig(
         enabled=pipeline.vlm_enabled,
-        threshold=0.5,  # Default threshold
-        return_timestamps=True,
-        return_confidence=True,
+        frame_count=20,  # Default, can be overridden
+        frame_interval=pipeline.vlm_frame_interval,
+        threshold=pipeline.vlm_threshold,
+        return_timestamps=pipeline.vlm_return_timestamps,
+        return_confidence=pipeline.vlm_return_confidence,
         save_to_file=True,
     )
     
-    # Build complete config
+    # Build multiplexer config - matching backend's multiplexer configuration
+    multiplexer_endpoints = []
+    if pipeline.vlm_multiplexer_endpoints:
+        for ep_data in pipeline.vlm_multiplexer_endpoints:
+            multiplexer_endpoints.append(VLMMultiplexerEndpoint(
+                base_url=ep_data.get("base_url", ""),
+                name=ep_data.get("name", "default"),
+                weight=ep_data.get("weight", 1),
+                max_concurrent=ep_data.get("max_concurrent", 5),
+                api_key=ep_data.get("api_key"),
+                model_id=ep_data.get("model_id", pipeline.vlm_model),
+            ))
+    
+    multiplexer_config = VLMMultiplexerConfig(
+        enabled=pipeline.vlm_multiplexer_enabled,
+        endpoints=multiplexer_endpoints,
+        max_concurrent_requests=pipeline.vlm_max_concurrent_requests,
+    )
+    
+    # Build complete config with all settings
     vlm_config = VLMConfig(
         engine=engine_config,
         processing=processing_config,
+        multiplexer=multiplexer_config,
+        cache_enabled=True,
         cache_dir=Path(config.data_dir) / "vlm_cache" if config.data_dir else None,
+        # Additional metadata for compatibility with backend
+        analysis_tags=analysis_tags,
+        detected_tag_confidence=pipeline.vlm_detected_tag_confidence,
     )
     
     # Override with environment variables if present
@@ -201,9 +241,7 @@ def _apply_env_overrides(config: VLMConfig) -> VLMConfig:
     if api_key := os.environ.get("VLM_API_KEY"):
         config.engine.api_key = api_key
     
-    # Base URL override
-    if base_url := os.environ.get("VLM_BASE_URL"):
-        config.engine.base_url = base_url
+    # Note: VLM_BASE_URL removed - use multiplexer endpoints instead
     
     # Processing config overrides
     if frame_count := os.environ.get("VLM_FRAME_COUNT"):
@@ -228,6 +266,28 @@ def _apply_env_overrides(config: VLMConfig) -> VLMConfig:
     if enabled := os.environ.get("VLM_ENABLED"):
         config.processing.enabled = enabled.lower() in ("true", "1", "yes")
     
+    # Analysis tags override (comma-separated)
+    if analysis_tags := os.environ.get("VLM_ANALYSIS_TAGS"):
+        config.analysis_tags = [tag.strip() for tag in analysis_tags.split(',') if tag.strip()]
+    
+    # Detected tag confidence override
+    if tag_confidence := os.environ.get("VLM_DETECTED_TAG_CONFIDENCE"):
+        try:
+            config.detected_tag_confidence = float(tag_confidence)
+        except ValueError:
+            pass
+    
+    # Multiplexer overrides
+    if multiplexer_enabled := os.environ.get("VLM_MULTIPLEXER_ENABLED"):
+        config.multiplexer.enabled = multiplexer_enabled.lower() in ("true", "1", "yes")
+    
+    if max_concurrent := os.environ.get("VLM_MAX_CONCURRENT_REQUESTS"):
+        try:
+            config.multiplexer.max_concurrent_requests = int(max_concurrent)
+            config.engine.max_concurrent = int(max_concurrent)
+        except ValueError:
+            pass
+    
     return config
 
 
@@ -248,6 +308,8 @@ def get_engine_config(config: Optional[VLMConfig] = None) -> VLMEngineConfig:
 def get_processing_params(config: Optional[VLMConfig] = None) -> Dict[str, Any]:
     """Get processing parameters as a dictionary.
     
+    Matches the backend's get_vlm_processing_params() function.
+    
     Args:
         config: Optional VLMConfig (loads from global if not provided)
         
@@ -265,6 +327,9 @@ def get_processing_params(config: Optional[VLMConfig] = None) -> Dict[str, Any]:
         "return_timestamps": config.processing.return_timestamps,
         "return_confidence": config.processing.return_confidence,
         "save_to_file": config.processing.save_to_file,
+        "analysis_tags": config.analysis_tags,
+        "detected_tag_confidence": config.detected_tag_confidence,
+        "vr_video": False,  # VR video support can be added later if needed
     }
 
 
@@ -382,6 +447,8 @@ def get_example_multiplexer_config() -> str:
 def validate_vlm_config(config: Optional[VLMConfig] = None) -> List[str]:
     """Validate VLM configuration and return list of issues.
     
+    Matches the validation logic from the gold standard backend.
+    
     Args:
         config: VLMConfig to validate (loads from global if not provided)
         
@@ -417,6 +484,14 @@ def validate_vlm_config(config: Optional[VLMConfig] = None) -> List[str]:
     if config.engine.timeout < 1:
         errors.append("timeout must be at least 1 second")
     
+    # Validate detected tag confidence
+    if not 0 <= config.detected_tag_confidence <= 1:
+        errors.append("detected_tag_confidence must be between 0 and 1")
+    
+    # Validate analysis tags
+    if not config.analysis_tags:
+        errors.append("analysis_tags cannot be empty")
+    
     # Validate multiplexer endpoints if enabled
     if config.multiplexer.enabled:
         if not config.multiplexer.endpoints:
@@ -426,8 +501,8 @@ def validate_vlm_config(config: Optional[VLMConfig] = None) -> List[str]:
             if not ep.base_url:
                 errors.append(f"Endpoint {i}: base_url is required")
             if ep.weight < 1:
-                errors.append(f"Endpoint {i}: weight must be positive")
+                errors.append(f"Endpoint {i}: weight must be a positive integer")
             if ep.max_concurrent < 1:
-                errors.append(f"Endpoint {i}: max_concurrent must be positive")
+                errors.append(f"Endpoint {i}: max_concurrent must be a positive integer")
     
     return errors

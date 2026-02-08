@@ -154,7 +154,7 @@ def download(
                             output,
                             output,
                             cid,
-                            config.pipeline.lit_network,
+                            config.blockchain.get_lit_network(),
                         )
                         
                         progress.update(task, description="Decryption complete")
@@ -509,7 +509,7 @@ def decrypt_file(
                     input_path,
                     output,
                     cid or "",
-                    config.pipeline.lit_network,
+                    config.blockchain.get_lit_network(),
                 )
                 
                 progress.update(task, completed=True)

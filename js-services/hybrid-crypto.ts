@@ -161,10 +161,26 @@ const AES_KEY_SIZE = 32;
 /** AES-GCM IV size in bytes (96 bits as per NIST recommendation) */
 const AES_IV_SIZE = 12;
 
+// Utility Functions
+// ============================================================================
+
+/**
+ * Convert ArrayBuffer or Uint8Array to base64 string
+ */
+=======
 /** AES-GCM authentication tag size in bytes (128 bits) */
 const AES_AUTH_TAG_SIZE = 16;
 
+/** Default chunk size for progress reporting (1MB) */
+const DEFAULT_CHUNK_SIZE = 1024 * 1024;
+
 // ============================================================================
+// Utility Functions
+// ============================================================================
+
+/**
+ * Convert ArrayBuffer or Uint8Array to base64 string
+ */============================================================================
 // Utility Functions
 // ============================================================================
 
@@ -337,6 +353,9 @@ export async function aesEncrypt(
  * @returns Decrypted data
  * @throws Error if decryption fails (wrong key, corrupted data, etc.)
  */
+// Lit Client Management
+// ============================================================================
+=======
 export async function aesDecrypt(
   encryptedData: Uint8Array,
   key: Uint8Array,
@@ -360,7 +379,130 @@ export async function aesDecrypt(
   }
 }
 
+/** Progress callback for chunked encryption */
+export type EncryptionProgressCallback = (
+  percent: number,
+  bytesProcessed: number,
+  totalBytes: number
+) => void;
+
+/** Encrypt data using AES-256-GCM with chunked processing for progress reporting */
+export async function aesEncryptChunked(
+  data: Uint8Array,
+  key: Uint8Array,
+  iv: Uint8Array,
+  onProgress?: EncryptionProgressCallback,
+  chunkSize: number = DEFAULT_CHUNK_SIZE
+): Promise<Uint8Array> {
+  const totalBytes = data.byteLength;
+  const totalChunks = Math.ceil(totalBytes / chunkSize);
+  const cryptoKey = await importAESKey(key, ['encrypt']);
+
+  onProgress?.(0, 0, totalBytes);
+
+  const encryptedChunkSize = chunkSize + AES_AUTH_TAG_SIZE;
+  const lastChunkSize = (totalBytes % chunkSize) || chunkSize;
+  const lastEncryptedChunkSize = lastChunkSize + AES_AUTH_TAG_SIZE;
+  const totalEncryptedSize = 4 + (totalChunks - 1) * (4 + 4 + encryptedChunkSize) + (4 + 4 + lastEncryptedChunkSize) + 12;
+
+  const output = new Uint8Array(totalEncryptedSize);
+  const view = new DataView(output.buffer);
+  view.setUint32(0, totalChunks, false);
+
+  let outputOffset = 4;
+  let bytesProcessed = 0;
+
+  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+    const start = chunkIndex * chunkSize;
+    const end = Math.min(start + chunkSize, totalBytes);
+    const chunkData = data.slice(start, end);
+
+    const chunkIv = new Uint8Array(iv);
+    const chunkIndexBytes = new Uint8Array(4);
+    new DataView(chunkIndexBytes.buffer).setUint32(0, chunkIndex, false);
+    chunkIv[8] ^= chunkIndexBytes[0];
+    chunkIv[9] ^= chunkIndexBytes[1];
+    chunkIv[10] ^= chunkIndexBytes[2];
+    chunkIv[11] ^= chunkIndexBytes[3];
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const encryptedChunk = new Uint8Array(
+      await crypto.subtle.encrypt({ name: 'AES-GCM', iv: chunkIv as any }, cryptoKey, chunkData as any)
+    );
+
+    view.setUint32(outputOffset, chunkIndex, false);
+    outputOffset += 4;
+    view.setUint32(outputOffset, encryptedChunk.byteLength, false);
+    outputOffset += 4;
+    output.set(encryptedChunk, outputOffset);
+    outputOffset += encryptedChunk.byteLength;
+
+    bytesProcessed = end;
+    onProgress?.((bytesProcessed / totalBytes) * 100, bytesProcessed, totalBytes);
+  }
+
+  output.set(iv, outputOffset);
+  return output;
+}
+
+/** Decrypt data that was encrypted with aesEncryptChunked */
+export async function aesDecryptChunked(encryptedData: Uint8Array, key: Uint8Array): Promise<Uint8Array> {
+  const cryptoKey = await importAESKey(key, ['decrypt']);
+  const originalIv = encryptedData.slice(-12);
+  const view = new DataView(encryptedData.buffer, encryptedData.byteOffset);
+  const totalChunks = view.getUint32(0, false);
+
+  let offset = 4;
+  let totalDecryptedSize = 0;
+  for (let i = 0; i < totalChunks; i++) {
+    offset += 4;
+    const encryptedChunkLength = view.getUint32(offset, false);
+    offset += 4;
+    totalDecryptedSize += encryptedChunkLength - AES_AUTH_TAG_SIZE;
+    offset += encryptedChunkLength;
+  }
+
+  const output = new Uint8Array(totalDecryptedSize);
+  let outputOffset = 0;
+  offset = 4;
+
+  for (let i = 0; i < totalChunks; i++) {
+    const chunkIndex = view.getUint32(offset, false);
+    offset += 4;
+    const encryptedChunkLength = view.getUint32(offset, false);
+    offset += 4;
+    const encryptedChunk = encryptedData.slice(offset, offset + encryptedChunkLength);
+    offset += encryptedChunkLength;
+
+    const chunkIv = new Uint8Array(originalIv);
+    const chunkIndexBytes = new Uint8Array(4);
+    new DataView(chunkIndexBytes.buffer).setUint32(0, chunkIndex, false);
+    chunkIv[8] ^= chunkIndexBytes[0];
+    chunkIv[9] ^= chunkIndexBytes[1];
+    chunkIv[10] ^= chunkIndexBytes[2];
+    chunkIv[11] ^= chunkIndexBytes[3];
+
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const decryptedChunk = new Uint8Array(
+        await crypto.subtle.decrypt({ name: 'AES-GCM', iv: chunkIv as any }, cryptoKey, encryptedChunk as any)
+      );
+      output.set(decryptedChunk, outputOffset);
+      outputOffset += decryptedChunk.byteLength;
+    } catch (error) {
+      if (error instanceof Error) {
+        throw new Error(`AES chunk decryption failed at chunk ${chunkIndex}: ${error.message}.`);
+      }
+      throw error;
+    }
+  }
+
+  return output;
+}
+
 // ============================================================================
+// Lit Client Management
+// ========================================================================================================================================================
 // Lit Client Management
 // ============================================================================
 

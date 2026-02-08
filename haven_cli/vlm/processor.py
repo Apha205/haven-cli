@@ -70,10 +70,17 @@ class VLMProcessor:
             engine_config = get_engine_config(self.config)
             analysis_config = create_analysis_config(self.config)
             
+            # Get base_url from multiplexer endpoints if available
+            base_url = None
+            if self.config.multiplexer.enabled and self.config.multiplexer.endpoints:
+                # Use the first endpoint's base_url
+                base_url = self.config.multiplexer.endpoints[0].base_url
+                logger.info(f"Using multiplexer endpoint: {base_url}")
+            
             self.engine = create_vlm_engine(
                 model=engine_config.model_name,
                 api_key=engine_config.api_key,
-                base_url=engine_config.base_url,
+                base_url=base_url,
                 config=analysis_config,
             )
         

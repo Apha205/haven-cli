@@ -145,7 +145,6 @@ function createLogger(): Logger {
 class SynapseWrapperImpl implements SynapseWrapper {
   private _isConnected = false;
   private _endpoint = '';
-  private _apiKey = '';
   private _privateKey = '';
   private _rpcUrl = '';
   private _synapse: unknown = null;
@@ -169,8 +168,7 @@ class SynapseWrapperImpl implements SynapseWrapper {
     // params.endpoint and params.rpcUrl take precedence over networkMode defaults
     const endpoint = connectParams.endpoint ?? defaultRpcUrl;
     
-    // Support both API key and private key authentication
-    const apiKey = connectParams.apiKey ?? Deno.env.get('SYNAPSE_API_KEY') ?? '';
+    // Authentication: HAVEN_PRIVATE_KEY required for blockchain-based auth
     const privateKey = (params.privateKey as string) ?? Deno.env.get('HAVEN_PRIVATE_KEY') ?? '';
     const rpcUrl = (params.rpcUrl as string) ?? Deno.env.get('FILECOIN_RPC_URL') ?? defaultRpcUrl;
     
@@ -178,13 +176,12 @@ class SynapseWrapperImpl implements SynapseWrapper {
       console.error(`[synapse-wrapper] Network mode: ${networkMode}, using RPC: ${rpcUrl}`);
     }
 
-    // Validate that we have authentication
-    if (!apiKey && !privateKey) {
-      throw new Error('Synapse API key or private key is required. Set SYNAPSE_API_KEY or HAVEN_PRIVATE_KEY environment variable.');
+    // Validate that we have private key
+    if (!privateKey) {
+      throw new Error('HAVEN_PRIVATE_KEY environment variable is required. Set it with: export HAVEN_PRIVATE_KEY=0x...');
     }
 
     this._endpoint = endpoint;
-    this._apiKey = apiKey;
     this._privateKey = privateKey;
     this._rpcUrl = rpcUrl;
 
@@ -192,7 +189,6 @@ class SynapseWrapperImpl implements SynapseWrapper {
     try {
       const response = await fetch(`${endpoint}/health`, {
         method: 'GET',
-        headers: apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {},
       });
       
       if (!response.ok && response.status !== 404) {
@@ -217,7 +213,6 @@ class SynapseWrapperImpl implements SynapseWrapper {
   async disconnect(): Promise<void> {
     this._isConnected = false;
     this._endpoint = '';
-    this._apiKey = '';
     
     // Cleanup Synapse service if initialized
     if (this._synapse) {

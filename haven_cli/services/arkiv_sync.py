@@ -81,7 +81,7 @@ def build_arkiv_config(
     Build Arkiv sync config from environment variables or explicit parameters.
     
     Args:
-        private_key: Optional private key (defaults to FILECOIN_PRIVATE_KEY or ARKIV_PRIVATE_KEY env var)
+        private_key: Optional private key (defaults to HAVEN_PRIVATE_KEY env var)
         rpc_url: Optional RPC URL (defaults to ARKIV_RPC_URL env var or network_mode default)
         enabled: Optional enabled flag (defaults to ARKIV_SYNC_ENABLED env var)
         expires_in: Optional expiration in seconds (defaults to ARKIV_EXPIRATION_WEEKS env var)
@@ -96,10 +96,8 @@ def build_arkiv_config(
     # Get network configuration for defaults
     network_config = get_network_config(network_mode)
     
-    # Get shared key from Filecoin or legacy Arkiv key
-    shared_key = private_key or os.getenv("FILECOIN_PRIVATE_KEY")
-    legacy_override = os.getenv("ARKIV_PRIVATE_KEY")
-    final_private_key = shared_key or legacy_override
+    # Get private key from HAVEN_PRIVATE_KEY env var
+    final_private_key = private_key or os.getenv("HAVEN_PRIVATE_KEY")
     
     # RPC URL priority: explicit > env var > network_mode default
     final_rpc_url = rpc_url or os.getenv("ARKIV_RPC_URL") or network_config.arkiv_rpc_url
@@ -364,6 +362,9 @@ def _build_payload(context: PipelineContext) -> dict[str, Any]:
         payload["root_cid"] = context.upload_result.root_cid
         if context.upload_result.piece_cid:
             payload["piece_cid"] = context.upload_result.piece_cid
+        # Include VLM JSON CID if available (primary VLM archival method)
+        if context.upload_result.vlm_json_cid:
+            payload["vlm_json_cid"] = context.upload_result.vlm_json_cid
     
     # Analysis result
     if context.analysis_result:

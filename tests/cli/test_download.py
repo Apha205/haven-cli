@@ -82,8 +82,8 @@ class TestDownloadCommand:
         """Test successful download."""
         # Setup mocks
         mock_config = Mock()
-        mock_config.pipeline.synapse_endpoint = "https://synapse.example.com"
-        mock_config.pipeline.synapse_api_key = "test-key"
+        mock_config.blockchain.get_filecoin_rpc_url.return_value = "https://api.calibration.node.glif.io/rpc/v1"
+        mock_config.blockchain.filecoin_rpc_override = None
         mock_load_config.return_value = mock_config
         
         mock_bridge = AsyncMock()
@@ -160,8 +160,8 @@ class TestInfoCommand:
         """Test successful info retrieval."""
         # Setup mocks
         mock_config = Mock()
-        mock_config.pipeline.synapse_endpoint = "https://synapse.example.com"
-        mock_config.pipeline.synapse_api_key = "test-key"
+        mock_config.blockchain.get_filecoin_rpc_url.return_value = "https://api.calibration.node.glif.io/rpc/v1"
+        mock_config.blockchain.filecoin_rpc_override = None
         mock_load_config.return_value = mock_config
         
         mock_bridge = AsyncMock()
@@ -205,8 +205,8 @@ class TestInfoCommand:
         """Test info with JSON output."""
         # Setup mocks
         mock_config = Mock()
-        mock_config.pipeline.synapse_endpoint = "https://synapse.example.com"
-        mock_config.pipeline.synapse_api_key = "test-key"
+        mock_config.blockchain.get_filecoin_rpc_url.return_value = "https://api.calibration.node.glif.io/rpc/v1"
+        mock_config.blockchain.filecoin_rpc_override = None
         mock_load_config.return_value = mock_config
         
         mock_status = {

@@ -17,6 +17,7 @@ from haven_cli.plugins.base import (
 
 # Built-in plugins
 from haven_cli.plugins.builtin import YouTubePlugin
+from haven_cli.plugins.builtin.bittorrent import BitTorrentPlugin
 
 logger = logging.getLogger(__name__)
 
@@ -374,6 +375,13 @@ class PluginManager:
             logger.debug("Loaded built-in plugin: YouTubePlugin")
         except Exception as e:
             logger.warning(f"Failed to load YouTubePlugin: {e}")
+        
+        # Register BitTorrent plugin
+        try:
+            self.register(BitTorrentPlugin)
+            logger.debug("Loaded built-in plugin: BitTorrentPlugin")
+        except Exception as e:
+            logger.warning(f"Failed to load BitTorrentPlugin: {e}")
     
     async def load_builtin_plugins(self) -> Dict[str, bool]:
         """Load and initialize all built-in plugins.

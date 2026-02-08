@@ -278,24 +278,39 @@ class TestEncryptStepEncryption:
             mock_mgr.get_instance.assert_called_once()
     
     @pytest.mark.asyncio
-    async def test_encrypt_with_lit_success(self, tmp_path):
+    async def test_encrypt_with_lit_success(self, tmp_path, monkeypatch):
         """Test successful encryption via Lit Protocol."""
+        # Set a test private key
+        monkeypatch.setenv("HAVEN_PRIVATE_KEY", "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        
         step = EncryptStep(config={"chain": "ethereum", "lit_network": "datil-dev"})
         
         # Create a test video file
         video_file = tmp_path / "test.mp4"
         video_file.write_bytes(b"test video content")
         
+        # Create mock context
+        context = PipelineContext(
+            source_path=video_file,
+            video_id=1,
+        )
+        
         # Mock the bridge
         mock_bridge = MagicMock()
         mock_bridge.call = AsyncMock(side_effect=[
             None,  # lit.connect response
             {
-                "ciphertext": "ZW5jcnlwdGVk",  # base64 for "encrypted"
-                "dataToEncryptHash": "0xhash123",
-                "accessControlConditionHash": "0xaccHash",
-            },  # lit.encrypt response
+                "encryptedFilePath": str(video_file) + ".encrypted",
+                "metadataPath": str(video_file) + ".encrypted.meta.json",
+                "metadata": {
+                    "keyHash": "0xhash123",
+                    "version": "hybrid-v1",
+                },
+                "originalSize": 18,
+                "encryptedSize": 34,
+            },  # lit.encryptFile response
         ])
+        mock_bridge.on_notification = MagicMock(return_value=lambda: None)
         
         access_conditions = [{"conditionType": "evmBasic"}]
         
@@ -303,17 +318,13 @@ class TestEncryptStepEncryption:
             mock_bridge,
             str(video_file),
             access_conditions,
+            context,
         )
         
-        assert result["ciphertext_path"] == str(video_file) + ".enc"
+        assert result["ciphertext_path"] == str(video_file) + ".encrypted"
         assert result["data_to_encrypt_hash"] == "0xhash123"
         assert result["chain"] == "ethereum"
         assert "original_hash" in result
-        
-        # Verify encrypted file was created
-        encrypted_file = tmp_path / "test.mp4.enc"
-        assert encrypted_file.exists()
-        assert encrypted_file.read_bytes() == b"encrypted"
         
         # Verify bridge calls
         assert mock_bridge.call.call_count == 2
@@ -323,11 +334,11 @@ class TestEncryptStepEncryption:
         assert connect_call[0][0] == "lit.connect"
         assert connect_call[0][1]["network"] == "datil-dev"
         
-        # Check lit.encrypt call
+        # Check lit.encryptFile call
         encrypt_call = mock_bridge.call.call_args_list[1]
-        assert encrypt_call[0][0] == "lit.encrypt"
+        assert encrypt_call[0][0] == "lit.encryptFile"
         assert encrypt_call[0][1]["chain"] == "ethereum"
-        assert encrypt_call[0][1]["accessControlConditions"] == access_conditions
+        assert encrypt_call[0][1]["onProgress"] == True
     
     @pytest.mark.asyncio
     async def test_encrypt_with_lit_connection_failure(self, tmp_path):
@@ -337,6 +348,12 @@ class TestEncryptStepEncryption:
         video_file = tmp_path / "test.mp4"
         video_file.write_bytes(b"test content")
         
+        # Create mock context
+        context = PipelineContext(
+            source_path=video_file,
+            video_id=1,
+        )
+        
         mock_bridge = MagicMock()
         mock_bridge.call = AsyncMock(side_effect=RuntimeError("Connection failed"))
         
@@ -345,33 +362,51 @@ class TestEncryptStepEncryption:
                 mock_bridge,
                 str(video_file),
                 [{}],
+                context,
             )
     
     @pytest.mark.asyncio
-    async def test_encrypt_with_lit_encryption_failure(self, tmp_path):
+    async def test_encrypt_with_lit_encryption_failure(self, tmp_path, monkeypatch):
         """Test handling of Lit encryption failure."""
+        # Set a test private key
+        monkeypatch.setenv("HAVEN_PRIVATE_KEY", "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        
         step = EncryptStep(config={"chain": "ethereum"})
         
         video_file = tmp_path / "test.mp4"
         video_file.write_bytes(b"test content")
         
+        # Create mock context
+        context = PipelineContext(
+            source_path=video_file,
+            video_id=1,
+        )
+        
         mock_bridge = MagicMock()
         mock_bridge.call = AsyncMock(side_effect=[
             None,  # lit.connect succeeds
-            RuntimeError("Encryption failed"),  # lit.encrypt fails
+            RuntimeError("Encryption failed"),  # lit.encryptFile fails
         ])
+        mock_bridge.on_notification = MagicMock(return_value=lambda: None)
         
         with pytest.raises(RuntimeError, match="Encryption failed"):
             await step._encrypt_with_lit(
                 mock_bridge,
                 str(video_file),
                 [{}],
+                context,
             )
     
     @pytest.mark.asyncio
-    async def test_encrypt_with_lit_file_not_found(self):
+    async def test_encrypt_with_lit_file_not_found(self, tmp_path):
         """Test handling of missing video file."""
         step = EncryptStep(config={"chain": "ethereum"})
+        
+        # Create mock context with non-existent file
+        context = PipelineContext(
+            source_path=tmp_path / "nonexistent.mp4",
+            video_id=1,
+        )
         
         # Use AsyncMock to properly mock async calls
         mock_bridge = MagicMock()
@@ -382,42 +417,63 @@ class TestEncryptStepEncryption:
                 mock_bridge,
                 "/nonexistent/path/video.mp4",
                 [{}],
+                context,
             )
     
     @pytest.mark.asyncio
-    async def test_encrypt_large_file(self, tmp_path):
+    async def test_encrypt_large_file(self, tmp_path, monkeypatch):
         """Test encryption of large files uses chunked method."""
+        # Set a test private key
+        monkeypatch.setenv("HAVEN_PRIVATE_KEY", "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        
         step = EncryptStep(config={"chain": "ethereum"})
         
         # Create a large test file (> 10MB)
         video_file = tmp_path / "large.mp4"
         video_file.write_bytes(b"x" * (11 * 1024 * 1024))
         
+        # Create mock context
+        context = PipelineContext(
+            source_path=video_file,
+            video_id=1,
+        )
+        
         mock_bridge = MagicMock()
         mock_bridge.call = AsyncMock(side_effect=[
             None,  # lit.connect
             {
-                "ciphertext": "ZW5j",  # base64 for "enc"
-                "dataToEncryptHash": "0xlargehash",
-            },  # lit.encrypt
+                "encryptedFilePath": str(video_file) + ".encrypted",
+                "metadataPath": str(video_file) + ".encrypted.meta.json",
+                "metadata": {
+                    "keyHash": "0xlargehash",
+                    "version": "hybrid-v1",
+                },
+                "originalSize": 11 * 1024 * 1024,
+                "encryptedSize": 11 * 1024 * 1024 + 100,
+            },  # lit.encryptFile
         ])
+        mock_bridge.on_notification = MagicMock(return_value=lambda: None)
         
         result = await step._encrypt_with_lit(
             mock_bridge,
             str(video_file),
             [{}],
+            context,
         )
         
         assert result["data_to_encrypt_hash"] == "0xlargehash"
-        assert Path(result["ciphertext_path"]).exists()
+        assert result["ciphertext_path"] == str(video_file) + ".encrypted"
 
 
 class TestEncryptStepProcess:
     """Tests for the main process method."""
     
     @pytest.mark.asyncio
-    async def test_process_success(self, tmp_path):
+    async def test_process_success(self, tmp_path, monkeypatch):
         """Test successful encryption process."""
+        # Set a test private key
+        monkeypatch.setenv("HAVEN_PRIVATE_KEY", "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        
         step = EncryptStep(config={
             "owner_wallet": "0x123",
             "chain": "ethereum",
@@ -436,11 +492,17 @@ class TestEncryptStepProcess:
         mock_bridge.call = AsyncMock(side_effect=[
             None,  # lit.connect
             {
-                "ciphertext": "ZW5j",
-                "dataToEncryptHash": "0xhash",
-                "accessControlConditionHash": "0xacc",
-            },  # lit.encrypt
+                "encryptedFilePath": str(video_file) + ".encrypted",
+                "metadataPath": str(video_file) + ".encrypted.meta.json",
+                "metadata": {
+                    "keyHash": "0xhash",
+                    "version": "hybrid-v1",
+                },
+                "originalSize": 12,
+                "encryptedSize": 28,
+            },  # lit.encryptFile
         ])
+        mock_bridge.on_notification = MagicMock(return_value=lambda: None)
         
         with patch.object(step, '_get_js_bridge', return_value=mock_bridge):
             with patch.object(step, '_save_encryption_metadata', new_callable=AsyncMock):
@@ -450,11 +512,14 @@ class TestEncryptStepProcess:
         assert result.data["ciphertext_hash"] == "0xhash"
         assert result.data["chain"] == "ethereum"
         assert context.encryption_metadata is not None
-        assert context.encrypted_video_path == str(video_file) + ".enc"
+        assert context.encrypted_video_path == str(video_file) + ".encrypted"
     
     @pytest.mark.asyncio
-    async def test_process_without_video_id(self, tmp_path):
+    async def test_process_without_video_id(self, tmp_path, monkeypatch):
         """Test encryption without video ID (skips database save)."""
+        # Set a test private key
+        monkeypatch.setenv("HAVEN_PRIVATE_KEY", "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        
         step = EncryptStep(config={
             "owner_wallet": "0x123",
             "chain": "ethereum",
@@ -472,8 +537,18 @@ class TestEncryptStepProcess:
         mock_bridge = MagicMock()
         mock_bridge.call = AsyncMock(side_effect=[
             None,
-            {"ciphertext": "ZW5j", "dataToEncryptHash": "0xhash"},
+            {
+                "encryptedFilePath": str(video_file) + ".encrypted",
+                "metadataPath": str(video_file) + ".encrypted.meta.json",
+                "metadata": {
+                    "keyHash": "0xhash",
+                    "version": "hybrid-v1",
+                },
+                "originalSize": 12,
+                "encryptedSize": 28,
+            },
         ])
+        mock_bridge.on_notification = MagicMock(return_value=lambda: None)
         
         with patch.object(step, '_get_js_bridge', return_value=mock_bridge):
             # Should not call save_encryption_metadata

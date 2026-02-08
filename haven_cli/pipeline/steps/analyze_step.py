@@ -12,6 +12,9 @@ The step is conditional and can be skipped via the vlm_enabled option.
 from __future__ import annotations
 
 import logging
+import os
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -59,6 +62,9 @@ class AnalyzeStep(ConditionalStep):
         super().__init__(config=config)
         self._processor: Optional[VLMProcessor] = None
         self._vlm_config: Optional[VLMConfig] = None
+        self._job_id: Optional[int] = None
+        self._frames_total: int = 0
+        self._start_time: Optional[float] = None
     
     @property
     def name(self) -> str:
@@ -85,6 +91,7 @@ class AnalyzeStep(ConditionalStep):
             StepResult with analysis data
         """
         video_path = context.video_path
+        self._start_time = time.time()
         
         # Emit analysis requested event
         await self._emit_event(EventType.ANALYSIS_REQUESTED, context, {
@@ -127,14 +134,43 @@ class AnalyzeStep(ConditionalStep):
                     skipped=True,
                 )
             
+            # Create AnalysisJob record for tracking
+            if context.video_id:
+                self._frames_total = self._vlm_config.processing.frame_count
+                self._job_id = await self._create_analysis_job(context.video_id)
+                await self._update_pipeline_snapshot(context.video_id, "analyzing", 0)
+            
             # Initialize VLM processor
             self._processor = VLMProcessor(config=self._vlm_config)
             await self._processor.initialize()
             
-            # Process video through VLM
+            # Process video through VLM with progress tracking
+            last_progress = [0]  # Use list to allow mutation in closure
+            last_speed_update = [time.time()]
+            
             def progress_callback(progress: int) -> None:
-                """Report progress to pipeline."""
+                """Report progress to pipeline and update job tracking."""
                 logger.debug(f"VLM analysis progress: {progress}%")
+                
+                # Update job progress (throttled to avoid DB spam)
+                now = time.time()
+                if now - last_speed_update[0] >= 1.0:  # Update every second
+                    if self._job_id and context.video_id:
+                        frames_processed = int(self._frames_total * progress / 100)
+                        # Run async update in background
+                        import asyncio
+                        try:
+                            loop = asyncio.get_event_loop()
+                            if loop.is_running():
+                                asyncio.create_task(
+                                    self._update_job_progress(
+                                        context.video_id, frames_processed, progress
+                                    )
+                                )
+                        except RuntimeError:
+                            pass
+                    last_speed_update[0] = now
+                last_progress[0] = progress
             
             results = await self._processor.process_video(
                 video_path,
@@ -146,12 +182,18 @@ class AnalyzeStep(ConditionalStep):
             tags = results.get("tags", {})
             confidence = results.get("confidence", 0.0)
             
+            # Determine ai.json path (saved by VLM processor if save_to_file is enabled)
+            ai_json_path = f"{video_path}.AI.json"
+            if not os.path.exists(ai_json_path):
+                ai_json_path = None  # File wasn't saved (save_to_file may be disabled)
+            
             # Create analysis result
             analysis_result = AIAnalysisResult(
                 video_path=video_path,
                 timestamps=timestamps,
                 tags=tags,
                 confidence=confidence,
+                ai_json_path=ai_json_path,
             )
             
             # Store in context
@@ -177,6 +219,12 @@ class AnalyzeStep(ConditionalStep):
                 "confidence": confidence,
             })
             
+            # Mark job as completed
+            if self._job_id and context.video_id:
+                ai_json_path = f"{video_path}.AI.json" if os.path.exists(f"{video_path}.AI.json") else None
+                await self._complete_analysis_job(self._job_id, ai_json_path)
+                await self._update_pipeline_snapshot(context.video_id, "analyze", 100, status="completed")
+            
             return StepResult.ok(
                 self.name,
                 timestamps=timestamps,
@@ -187,6 +235,13 @@ class AnalyzeStep(ConditionalStep):
         except FileNotFoundError as e:
             error_msg = f"Video file not found: {e}"
             logger.error(error_msg)
+            
+            # Mark job as failed
+            if self._job_id and context.video_id:
+                await self._fail_analysis_job(self._job_id, error_msg)
+                await self._update_pipeline_snapshot(
+                    context.video_id, "analyze", 0, status="failed", error=error_msg
+                )
             
             await self._emit_event(EventType.ANALYSIS_FAILED, context, {
                 "video_path": video_path,
@@ -205,6 +260,13 @@ class AnalyzeStep(ConditionalStep):
         except Exception as e:
             error_msg = f"VLM analysis failed: {str(e)}"
             logger.error(error_msg, exc_info=True)
+            
+            # Mark job as failed
+            if self._job_id and context.video_id:
+                await self._fail_analysis_job(self._job_id, error_msg)
+                await self._update_pipeline_snapshot(
+                    context.video_id, "analyze", 0, status="failed", error=error_msg
+                )
             
             # Emit analysis failed event
             await self._emit_event(EventType.ANALYSIS_FAILED, context, {
@@ -281,6 +343,149 @@ class AnalyzeStep(ConditionalStep):
     async def on_skip(self, context: PipelineContext, reason: str) -> None:
         """Handle step skip - log that VLM was skipped."""
         logger.info(f"VLM analysis skipped: {reason}")
+    
+    async def _create_analysis_job(self, video_id: int) -> Optional[int]:
+        """Create an AnalysisJob record for tracking.
+        
+        Args:
+            video_id: Video ID
+            
+        Returns:
+            Job ID or None if creation failed
+        """
+        try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.repositories import AnalysisJobRepository
+            
+            with get_db_session() as session:
+                repo = AnalysisJobRepository(session)
+                model_name = self._vlm_config.engine.model_name if self._vlm_config else "unknown"
+                job = repo.create(
+                    video_id=video_id,
+                    analysis_type="vlm",
+                    model_name=model_name,
+                    status="analyzing",
+                    frames_total=self._frames_total,
+                )
+                logger.debug(f"Created AnalysisJob {job.id} for video {video_id}")
+                return job.id
+        except Exception as e:
+            logger.warning(f"Failed to create AnalysisJob: {e}")
+            return None
+    
+    async def _update_job_progress(
+        self,
+        video_id: int,
+        frames_processed: int,
+        progress_percent: float,
+    ) -> None:
+        """Update AnalysisJob progress.
+        
+        Args:
+            video_id: Video ID
+            frames_processed: Number of frames processed
+            progress_percent: Progress percentage (0-100)
+        """
+        try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.repositories import AnalysisJobRepository, PipelineSnapshotRepository
+            
+            with get_db_session() as session:
+                job_repo = AnalysisJobRepository(session)
+                if self._job_id:
+                    job_repo.update_progress(self._job_id, frames_processed)
+                
+                # Also update pipeline snapshot
+                snapshot_repo = PipelineSnapshotRepository(session)
+                snapshot_repo.update_stage(
+                    video_id=video_id,
+                    stage="analyze",
+                    status="active",
+                    progress_percent=progress_percent,
+                )
+        except Exception as e:
+            logger.debug(f"Failed to update AnalysisJob progress: {e}")
+    
+    async def _complete_analysis_job(
+        self,
+        job_id: int,
+        output_file: Optional[str] = None,
+    ) -> None:
+        """Mark AnalysisJob as completed.
+        
+        Args:
+            job_id: Job ID
+            output_file: Path to output file (AI.json)
+        """
+        try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.repositories import AnalysisJobRepository
+            
+            with get_db_session() as session:
+                repo = AnalysisJobRepository(session)
+                repo.complete_analysis(job_id, output_file=output_file)
+                logger.debug(f"Completed AnalysisJob {job_id}")
+        except Exception as e:
+            logger.warning(f"Failed to complete AnalysisJob: {e}")
+    
+    async def _fail_analysis_job(self, job_id: int, error_message: str) -> None:
+        """Mark AnalysisJob as failed.
+        
+        Args:
+            job_id: Job ID
+            error_message: Error description
+        """
+        try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.models import AnalysisJob
+            
+            with get_db_session() as session:
+                job = session.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
+                if job:
+                    job.status = "failed"
+                    job.error_message = error_message
+                    session.commit()
+                logger.debug(f"Failed AnalysisJob {job_id}: {error_message}")
+        except Exception as e:
+            logger.warning(f"Failed to mark AnalysisJob as failed: {e}")
+    
+    async def _update_pipeline_snapshot(
+        self,
+        video_id: int,
+        stage: str,
+        progress_percent: float,
+        status: str = "active",
+        error: Optional[str] = None,
+    ) -> None:
+        """Update PipelineSnapshot for TUI dashboard.
+        
+        Args:
+            video_id: Video ID
+            stage: Current stage name
+            progress_percent: Stage progress (0-100)
+            status: Overall status
+            error: Error message if failed
+        """
+        try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.repositories import PipelineSnapshotRepository
+            
+            with get_db_session() as session:
+                repo = PipelineSnapshotRepository(session)
+                
+                if status == "failed" and error:
+                    repo.mark_error(video_id, stage, error)
+                elif status == "completed":
+                    repo.mark_completed(video_id)
+                else:
+                    repo.update_stage(
+                        video_id=video_id,
+                        stage=stage,
+                        status=status,
+                        progress_percent=progress_percent,
+                    )
+        except Exception as e:
+            logger.debug(f"Failed to update PipelineSnapshot: {e}")
 
 
 class MockAnalyzeStep(ConditionalStep):

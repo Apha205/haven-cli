@@ -85,10 +85,8 @@ def show_config(
             ("vlm_api_key", mask(config.pipeline.vlm_api_key or "", True), True),
             ("vlm_timeout", str(config.pipeline.vlm_timeout), False),
             ("encryption_enabled", str(config.pipeline.encryption_enabled), False),
-            ("lit_network", config.pipeline.lit_network, False),
             ("upload_enabled", str(config.pipeline.upload_enabled), False),
             ("sync_enabled", str(config.pipeline.sync_enabled), False),
-            ("arkiv_endpoint", config.pipeline.arkiv_endpoint or "", False),
             ("arkiv_contract", config.pipeline.arkiv_contract or "", False),
             ("max_concurrent_videos", str(config.pipeline.max_concurrent_videos), False),
             ("retry_attempts", str(config.pipeline.retry_attempts), False),
@@ -280,7 +278,7 @@ def init_config(
                 default="",
             )
             if arkiv_endpoint:
-                config.pipeline.arkiv_endpoint = arkiv_endpoint
+                config.blockchain.arkiv_rpc_override = arkiv_endpoint
         
         console.print()
         console.print("[bold cyan]VLM Configuration[/bold cyan]")
@@ -307,11 +305,14 @@ def init_config(
         )
         config.pipeline.encryption_enabled = encryption_enabled
         if encryption_enabled:
+            # Show the auto-configured network
+            console.print(f"  [dim]Lit Network: {config.blockchain.get_lit_network()}[/dim]")
             lit_network = typer.prompt(
-                "  Lit Network",
-                default=config.pipeline.lit_network
+                "  Lit Network (press Enter to use default)",
+                default="",
             )
-            config.pipeline.lit_network = lit_network
+            if lit_network:
+                config.blockchain.lit_network_override = lit_network
         
         console.print()
         console.print("[bold cyan]Pipeline Configuration[/bold cyan]")
@@ -349,8 +350,13 @@ def init_config(
     # Set permissions on config file (0600 - owner read/write only)
     config_path.chmod(0o600)
     
+    # Initialize database tables
+    from haven_cli.database.connection import create_tables
+    create_tables(config)
+    
     console.print()
     console.print(f"[green]✓[/green] Configuration initialized at {config_path}")
+    console.print(f"[green]✓[/green] Database tables created")
     console.print(f"[dim]Config file permissions set to 0600 (owner only)[/dim]")
 
 
@@ -559,6 +565,160 @@ def set_network(
             raise typer.Exit(code=1)
 
 
+@app.command("setup-vlm")
+def setup_vlm(
+    url: str = typer.Option(
+        None,
+        "--url",
+        "-u",
+        help="VLM endpoint URL (e.g., http://localhost:1234/v1)",
+    ),
+    name: str = typer.Option(
+        "default",
+        "--name",
+        "-n",
+        help="Endpoint name identifier",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        "-k",
+        help="API key for this endpoint",
+    ),
+    weight: int = typer.Option(
+        1,
+        "--weight",
+        "-w",
+        help="Load balancing weight",
+    ),
+    max_concurrent: int = typer.Option(
+        5,
+        "--max-concurrent",
+        "-c",
+        help="Maximum concurrent requests for this endpoint",
+    ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive",
+        "-i",
+        help="Interactive setup mode",
+    ),
+) -> None:
+    """Setup VLM multiplexer configuration.
+    
+    This command configures VLM endpoints for load balancing across multiple servers.
+    The multiplexer is now the ONLY supported method for VLM processing.
+    
+    Examples:
+        # Quick setup with single endpoint
+        haven config setup-vlm --url http://localhost:1234/v1
+        
+        # Setup with custom options
+        haven config setup-vlm --url http://gpu-server:1234/v1 --name primary --weight 8
+        
+        # Interactive setup
+        haven config setup-vlm --interactive
+        
+        # Add API key
+        haven config setup-vlm --url http://api.openai.com/v1 --api-key sk-...
+    """
+    from haven_cli.config import get_config, save_config
+    from haven_cli.vlm.config import save_multiplexer_config, get_example_multiplexer_config
+    
+    config = get_config()
+    
+    if interactive:
+        console.print("[bold]VLM Multiplexer Setup (Interactive)[/bold]")
+        console.print()
+        
+        # Get endpoint URL
+        url = typer.prompt("Endpoint URL", default="http://localhost:1234/v1")
+        name = typer.prompt("Endpoint name", default="default")
+        weight = typer.prompt("Weight (higher = more traffic)", default=1, type=int)
+        max_concurrent = typer.prompt("Max concurrent requests", default=5, type=int)
+        
+        # Optional API key
+        api_key_input = typer.prompt("API key (optional)", default="", show_default=False)
+        api_key = api_key_input if api_key_input else None
+    
+    if not url:
+        console.print("[red]Error: --url is required (or use --interactive)[/red]")
+        console.print()
+        console.print("Example:")
+        console.print("  haven config setup-vlm --url http://localhost:1234/v1")
+        raise typer.Exit(code=1)
+    
+    # Create endpoint config
+    endpoint = {
+        "base_url": url,
+        "name": name,
+        "weight": weight,
+        "max_concurrent": max_concurrent,
+    }
+    if api_key:
+        endpoint["api_key"] = api_key
+    
+    # Enable multiplexer and save endpoint
+    config.pipeline.vlm_multiplexer_enabled = True
+    
+    # Add to existing endpoints or create new list
+    if not config.pipeline.vlm_multiplexer_endpoints:
+        config.pipeline.vlm_multiplexer_endpoints = []
+    
+    config.pipeline.vlm_multiplexer_endpoints.append(endpoint)
+    
+    # Save config
+    save_config(config)
+    
+    # Also save to separate JSON file for compatibility
+    save_multiplexer_config(config.pipeline.vlm_multiplexer_endpoints)
+    
+    console.print(f"[green]✅ Added VLM endpoint:[/green] {name} ({url})")
+    console.print()
+    console.print("[bold]Current multiplexer configuration:[/bold]")
+    console.print(f"  Enabled: {config.pipeline.vlm_multiplexer_enabled}")
+    console.print(f"  Endpoints: {len(config.pipeline.vlm_multiplexer_endpoints)}")
+    for i, ep in enumerate(config.pipeline.vlm_multiplexer_endpoints, 1):
+        console.print(f"    {i}. {ep.get('name')} → {ep.get('base_url')} (weight={ep.get('weight')})")
+    console.print()
+    console.print("[dim]Add more endpoints by running this command again.[/dim]")
+
+
+@app.command("vlm-example")
+def show_vlm_example() -> None:
+    """Show example VLM multiplexer configuration.
+    
+    Example:
+        haven config vlm-example
+    """
+    from haven_cli.vlm.config import get_example_multiplexer_config
+    
+    console.print("[bold]Example VLM Multiplexer Configuration[/bold]")
+    console.print()
+    console.print("You can save this to your data directory as 'vlm_multiplexer.json':")
+    console.print()
+    
+    example = get_example_multiplexer_config()
+    console.print(Syntax(example, "json", theme="monokai"))
+    console.print()
+    console.print("Or add to your config.toml:")
+    console.print()
+    console.print(Syntax("""[pipeline]
+vlm_multiplexer_enabled = true
+
+[[pipeline.vlm_multiplexer_endpoints]]
+base_url = "http://primary-server:1234/v1"
+name = "primary"
+weight = 8
+max_concurrent = 10
+
+[[pipeline.vlm_multiplexer_endpoints]]
+base_url = "http://secondary-server:1234/v1"
+name = "secondary"
+weight = 1
+max_concurrent = 5""", "toml", theme="monokai"))
+
+
 @app.command("env")
 def show_env_vars() -> None:
     """Show supported environment variables.
@@ -576,6 +736,8 @@ def show_env_vars() -> None:
         ("HAVEN_VLM_ENABLED", "Enable/disable VLM analysis", "true/false"),
         ("HAVEN_VLM_MODEL", "VLM model to use", "zai-org/glm-4.6v-flash"),
         ("HAVEN_VLM_API_KEY", "API key for VLM service", "sk-..."),
+        ("HAVEN_VLM_MULTIPLEXER_ENABLED", "Enable VLM multiplexer", "true/false"),
+        ("HAVEN_PRIVATE_KEY", "Private key for Filecoin blockchain auth (REQUIRED)", "0x..."),
         ("HAVEN_ENCRYPTION_ENABLED", "Enable/disable Lit Protocol encryption", "true/false"),
         ("HAVEN_LIT_NETWORK", "Lit Protocol network (override)", "datil-dev"),
         ("HAVEN_UPLOAD_ENABLED", "Enable/disable Filecoin upload", "true/false"),

@@ -459,6 +459,17 @@ def create_default_pipeline(
     builder = PipelineBuilder().with_max_concurrent(max_concurrent)
     
     if config:
+        # Add computed blockchain network values to config for pipeline steps
+        # These are derived from blockchain config and passed to steps for convenience
+        blockchain_config = config.get("blockchain")
+        if blockchain_config:
+            config = {
+                **config,
+                "network_mode": blockchain_config.network_mode,
+                "lit_network": blockchain_config.get_lit_network(),
+                "filecoin_rpc_url": blockchain_config.get_filecoin_rpc_url(),
+                "arkiv_rpc_url": blockchain_config.get_arkiv_rpc_url(),
+            }
         builder.with_config(config)
     
     # Always include ingest step

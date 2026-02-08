@@ -272,6 +272,8 @@ class TestConfigValidation:
     def test_validate_default_config(self):
         """Test validating default config."""
         config = HavenConfig()
+        # Disable upload to avoid HAVEN_PRIVATE_KEY requirement in default test
+        config.pipeline.upload_enabled = False
         errors = validate_config(config)
         # Default config should have warnings but no errors
         assert all(e.severity != "error" for e in errors)
@@ -290,17 +292,18 @@ class TestConfigValidation:
         """Test validation catches invalid URL."""
         config = HavenConfig()
         config.pipeline.sync_enabled = True
-        config.pipeline.arkiv_endpoint = "not-a-url"
+        config.blockchain.arkiv_rpc_override = "not-a-url"
         errors = validate_config(config)
         
-        url_errors = [e for e in errors if "arkiv_endpoint" in e.field]
+        url_errors = [e for e in errors if "arkiv_rpc_override" in e.field]
         assert len(url_errors) >= 1
         assert url_errors[0].severity == "error"
     
     def test_validate_missing_api_key_warning(self):
-        """Test validation warns about missing API key."""
+        """Test validation warns about missing API key when multiplexer disabled."""
         config = HavenConfig()
         config.pipeline.vlm_api_key = None
+        config.pipeline.vlm_multiplexer_enabled = False  # Disable multiplexer to test warning
         errors = validate_config(config)
         
         api_key_warnings = [e for e in errors if "vlm_api_key" in e.field]

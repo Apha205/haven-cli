@@ -10,11 +10,16 @@ The step uses the JS Runtime Bridge to communicate with the
 Lit Protocol SDK running in a Deno subprocess.
 
 The step is conditional and can be skipped via the encrypt option.
+
+Task 12: Writes progress to EncryptionJob and PipelineSnapshot tables.
 """
 
+import asyncio
 import base64
 import logging
 import os
+import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from haven_cli.js_runtime.bridge import JSRuntimeBridge
@@ -47,6 +52,7 @@ class EncryptStep(ConditionalStep):
     
     Emits:
         - ENCRYPT_REQUESTED event when starting
+        - ENCRYPT_PROGRESS events during encryption
         - ENCRYPT_COMPLETE event on success
     
     Output data:
@@ -54,7 +60,19 @@ class EncryptStep(ConditionalStep):
         - access_conditions: Access control conditions used
         - chain: Blockchain used for access control
         - encrypted_path: Path to the encrypted file
+    
+    Task 12: Creates/updates EncryptionJob and PipelineSnapshot records.
     """
+    
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        """Initialize the encrypt step.
+        
+        Args:
+            config: Step configuration (passed to base class)
+        """
+        super().__init__(config=config)
+        self._job_id: Optional[int] = None
+        self._start_time: Optional[float] = None
     
     @property
     def name(self) -> str:
@@ -86,6 +104,13 @@ class EncryptStep(ConditionalStep):
             StepResult with encryption metadata
         """
         video_path = context.video_path
+        self._start_time = time.time()
+        
+        # Create EncryptionJob record for tracking
+        if context.video_id:
+            file_size = context.video_metadata.file_size if context.video_metadata else 0
+            self._job_id = await self._create_encryption_job(context.video_id, file_size)
+            await self._update_pipeline_snapshot(context.video_id, "encrypt", 0)
         
         # Emit encrypt requested event
         await self._emit_event(EventType.ENCRYPT_REQUESTED, context, {
@@ -100,11 +125,12 @@ class EncryptStep(ConditionalStep):
             # Get JS Runtime Bridge via manager
             bridge = await self._get_js_bridge()
             
-            # Encrypt via Lit Protocol
+            # Encrypt via Lit Protocol with progress tracking
             encryption_result = await self._encrypt_with_lit(
                 bridge,
                 video_path,
                 access_conditions,
+                context,
             )
             
             # Create encryption metadata
@@ -126,6 +152,11 @@ class EncryptStep(ConditionalStep):
                     encryption_metadata,
                 )
             
+            # Mark job as completed
+            if self._job_id and context.video_id:
+                await self._complete_encryption_job(self._job_id, encryption_metadata.data_to_encrypt_hash)
+                await self._update_pipeline_snapshot(context.video_id, "encrypt", 100, status="completed")
+            
             # Emit encrypt complete event
             await self._emit_event(EventType.ENCRYPT_COMPLETE, context, {
                 "video_path": video_path,
@@ -144,6 +175,15 @@ class EncryptStep(ConditionalStep):
             
         except Exception as e:
             logger.error(f"Encryption failed: {e}")
+            
+            # Mark job as failed
+            error_msg = str(e)
+            if self._job_id and context.video_id:
+                await self._fail_encryption_job(self._job_id, error_msg)
+                await self._update_pipeline_snapshot(
+                    context.video_id, "encrypt", 0, status="failed", error=error_msg
+                )
+            
             return StepResult.fail(
                 self.name,
                 StepError.from_exception(e, code="ENCRYPT_ERROR"),
@@ -165,20 +205,25 @@ class EncryptStep(ConditionalStep):
         bridge: JSRuntimeBridge,
         video_path: str,
         access_conditions: List[Dict[str, Any]],
+        context: PipelineContext,
     ) -> Dict[str, Any]:
         """Encrypt content using Lit Protocol via JS bridge.
         
         The process:
         1. Ensure Lit Protocol connection
-        2. Read video file content
-        3. Call Lit SDK encrypt function via bridge
-        4. Store ciphertext to file
-        5. Return encryption metadata
+        2. Call Lit SDK encryptFile function via bridge with progress tracking
+        3. Return encryption metadata
+        
+        Uses hybrid encryption (AES-256-GCM + Lit Protocol) with chunked
+        encryption for progress reporting on large files.
+        
+        Task 12: Receives progress notifications and updates database tables.
         
         Args:
             bridge: JS Runtime Bridge instance
             video_path: Path to video file
             access_conditions: Access control conditions
+            context: Pipeline context for progress updates
             
         Returns:
             Dictionary with encryption result including:
@@ -192,6 +237,7 @@ class EncryptStep(ConditionalStep):
             FileNotFoundError: If video file doesn't exist
         """
         import os
+        import hashlib
         
         # Get network configuration (from blockchain.network_mode)
         network_mode = self._config.get("network_mode", "testnet")
@@ -211,135 +257,116 @@ class EncryptStep(ConditionalStep):
             logger.error(f"Failed to connect to Lit Protocol: {e}")
             raise RuntimeError(f"Lit Protocol connection failed: {e}") from e
         
-        # Read file content
+        # Check file exists
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Video file not found: {video_path}")
         
-        logger.info(f"Reading video file for encryption: {video_path}")
-        try:
-            with open(video_path, "rb") as f:
-                content = f.read()
-        except Exception as e:
-            raise RuntimeError(f"Failed to read video file: {e}") from e
+        file_size = os.path.getsize(video_path)
+        logger.info(f"Encrypting video file: {video_path} ({file_size} bytes)")
         
-        # For large files, use chunked encryption
-        file_size = len(content)
-        if file_size > 10 * 1024 * 1024:  # 10MB threshold
-            logger.info(f"Large file detected ({file_size} bytes), using chunked encryption")
-            return await self._encrypt_large_file(
-                bridge, video_path, content, access_conditions
-            )
+        # Get private key for encryption
+        private_key = os.environ.get("HAVEN_PRIVATE_KEY") or os.environ.get("PRIVATE_KEY")
+        if not private_key:
+            raise RuntimeError("Private key required for encryption. Set HAVEN_PRIVATE_KEY environment variable.")
         
-        # Encrypt via Lit Protocol
-        logger.info(f"Encrypting content via Lit Protocol on chain: {chain}")
+        # Set up progress notification handler
+        last_progress = [0]  # Use list to allow mutation in nested function
         
-        try:
-            result = await bridge.call("lit.encrypt", {
-                "data": base64.b64encode(content).decode(),
-                "accessControlConditions": access_conditions,
-                "chain": chain,
-            })
-        except Exception as e:
-            logger.error(f"Lit Protocol encryption failed: {e}")
-            raise RuntimeError(f"Encryption failed: {e}") from e
-        
-        # Store ciphertext to file
-        encrypted_path = video_path + ".enc"
-        logger.info(f"Writing encrypted content to: {encrypted_path}")
-        
-        try:
-            ciphertext = result.get("ciphertext", "")
-            if isinstance(ciphertext, str):
-                # Assume base64 encoded
-                with open(encrypted_path, "wb") as f:
-                    f.write(base64.b64decode(ciphertext))
-            else:
-                # Already bytes
-                with open(encrypted_path, "wb") as f:
-                    f.write(ciphertext)
-        except Exception as e:
-            logger.error(f"Failed to write encrypted file: {e}")
-            raise RuntimeError(f"Failed to save encrypted file: {e}") from e
-        
-        # Calculate original file hash for integrity verification
-        import hashlib
-        original_hash = hashlib.sha256(content).hexdigest()
-        
-        logger.info(f"Encryption complete. Hash: {result.get('dataToEncryptHash', '')}")
-        
-        return {
-            "ciphertext_path": encrypted_path,
-            "data_to_encrypt_hash": result.get("dataToEncryptHash", ""),
-            "access_control_condition_hash": result.get("accessControlConditionHash", ""),
-            "chain": chain,
-            "original_hash": original_hash,
-        }
-    
-    async def _encrypt_large_file(
-        self,
-        bridge: JSRuntimeBridge,
-        video_path: str,
-        content: bytes,
-        access_conditions: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """Encrypt large files using chunked encryption for memory efficiency.
-        
-        This method encrypts the content in chunks to avoid loading the entire
-        encrypted result into memory at once.
-        
-        Args:
-            bridge: JS Runtime Bridge instance
-            video_path: Path to video file
-            content: File content as bytes
-            access_conditions: Access control conditions
+        def handle_encrypt_progress(params: dict) -> None:
+            """Handle encryption progress notifications from JS runtime."""
+            percent = params.get("percent", 0)
+            message = params.get("message", "")
+            bytes_processed = params.get("bytesProcessed", 0)
+            total_bytes = params.get("totalBytes", file_size)
             
-        Returns:
-            Dictionary with encryption result
-        """
-        # Get network configuration
-        network_mode = self._config.get("network_mode", "testnet")
-        network_config = get_network_config(network_mode)
-        chain = self._config.get("chain") or network_config.chain_for_access_control
-        chunk_size = 1024 * 1024  # 1MB chunks
+            # Only emit events for meaningful progress changes (every 5%)
+            if percent - last_progress[0] >= 5 or percent >= 100:
+                last_progress[0] = percent
+                
+                # Calculate encryption speed
+                if self._start_time:
+                    elapsed = time.time() - self._start_time
+                    encrypt_speed = int(bytes_processed / elapsed) if elapsed > 0 else 0
+                else:
+                    encrypt_speed = 0
+                
+                # Update job progress in database
+                if self._job_id and context.video_id:
+                    asyncio.create_task(
+                        self._update_job_progress(
+                            context.video_id, bytes_processed, percent, total_bytes, encrypt_speed
+                        )
+                    )
+                
+                # Emit progress event
+                asyncio.create_task(
+                    self._emit_event(EventType.ENCRYPT_PROGRESS, context, {
+                        "video_id": context.video_id,
+                        "job_id": self._job_id,
+                        "progress": percent,
+                        "message": message,
+                        "speed": encrypt_speed,
+                        "bytes_processed": bytes_processed,
+                        "bytes_total": total_bytes,
+                        "stage": "encrypting" if percent < 100 else "complete",
+                    })
+                )
         
-        logger.info(f"Using chunked encryption for large file")
-        
-        # For large files, we still need to pass the whole content to Lit
-        # but we read it in a memory-efficient way
-        # In a production implementation, Lit Protocol might support streaming
-        # For now, we pass the entire content but could optimize based on Lit's capabilities
+        # Register for progress notifications
+        unregister_progress = bridge.on_notification("lit.encryptProgress", handle_encrypt_progress)
         
         try:
-            result = await bridge.call("lit.encrypt", {
-                "data": base64.b64encode(content).decode(),
-                "accessControlConditions": access_conditions,
-                "chain": chain,
+            # Emit progress event - starting
+            await self._emit_event(EventType.ENCRYPT_PROGRESS, context, {
+                "video_id": context.video_id,
+                "job_id": self._job_id,
+                "progress": 0,
+                "stage": "encrypting",
             })
-        except Exception as e:
-            logger.error(f"Lit Protocol encryption failed for large file: {e}")
-            raise RuntimeError(f"Large file encryption failed: {e}") from e
-        
-        # Stream ciphertext to file
-        encrypted_path = video_path + ".enc"
-        ciphertext = result.get("ciphertext", "")
-        
-        with open(encrypted_path, "wb") as f:
-            if isinstance(ciphertext, str):
-                f.write(base64.b64decode(ciphertext))
-            else:
-                f.write(ciphertext)
-        
-        # Calculate original file hash
-        import hashlib
-        original_hash = hashlib.sha256(content).hexdigest()
-        
-        return {
-            "ciphertext_path": encrypted_path,
-            "data_to_encrypt_hash": result.get("dataToEncryptHash", ""),
-            "access_control_condition_hash": result.get("accessControlConditionHash", ""),
-            "chain": chain,
-            "original_hash": original_hash,
-        }
+            
+            # Call encryptFile with progress tracking enabled
+            # This uses hybrid encryption (AES-256-GCM + Lit Protocol)
+            result = await bridge.call("lit.encryptFile", {
+                "filePath": video_path,
+                "chain": chain,
+                "privateKey": private_key,
+                "onProgress": True,  # Request progress notifications
+            })
+            
+            # Extract result data
+            encrypted_path = result.get("encryptedFilePath", "")
+            metadata = result.get("metadata", {})
+            
+            # Calculate original file hash for integrity verification
+            original_hash = hashlib.sha256(open(video_path, "rb").read()).hexdigest()
+            
+            # Final progress update
+            if self._job_id and context.video_id:
+                await self._update_job_progress(context.video_id, file_size, 100, file_size)
+            
+            # Emit progress event - complete
+            await self._emit_event(EventType.ENCRYPT_PROGRESS, context, {
+                "video_id": context.video_id,
+                "job_id": self._job_id,
+                "progress": 100,
+                "speed": file_size,
+                "stage": "complete",
+            })
+            
+            logger.info(f"Encryption complete. Encrypted file: {encrypted_path}")
+            
+            return {
+                "ciphertext_path": encrypted_path,
+                "data_to_encrypt_hash": metadata.get("keyHash", ""),
+                "access_control_condition_hash": "",  # Not returned by hybrid encryption
+                "chain": chain,
+                "original_hash": original_hash,
+                "metadata_path": result.get("metadataPath", ""),
+            }
+            
+        finally:
+            # Unregister progress handler
+            unregister_progress()
     
     def _get_access_conditions(
         self,
@@ -398,7 +425,7 @@ class EncryptStep(ConditionalStep):
         
         # Auto-derive owner_wallet from private key if not explicitly set
         if not wallet_address:
-            private_key = os.environ.get("HAVEN_PRIVATE_KEY") or os.environ.get("FILECOIN_PRIVATE_KEY")
+            private_key = os.environ.get("HAVEN_PRIVATE_KEY")
             if private_key:
                 wallet_address = get_wallet_address_from_private_key(private_key)
                 if wallet_address and wallet_address != "unknown":
@@ -592,3 +619,158 @@ class EncryptStep(ConditionalStep):
     ) -> None:
         """Handle encryption error."""
         logger.error(f"Encryption step failed: {error.message if error else 'Unknown error'}")
+    
+    # =========================================================================
+    # Task 12: Job tracking helper methods
+    # =========================================================================
+    
+    async def _create_encryption_job(
+        self,
+        video_id: int,
+        bytes_total: int,
+    ) -> Optional[int]:
+        """Create an EncryptionJob record for tracking.
+        
+        Args:
+            video_id: Video ID
+            bytes_total: Total bytes to encrypt
+            
+        Returns:
+            Job ID or None if creation failed
+        """
+        try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.repositories import EncryptionJobRepository
+            
+            with get_db_session() as session:
+                repo = EncryptionJobRepository(session)
+                job = repo.create(
+                    video_id=video_id,
+                    status="encrypting",
+                    bytes_total=bytes_total,
+                )
+                logger.debug(f"Created EncryptionJob {job.id} for video {video_id}")
+                return job.id
+        except Exception as e:
+            logger.warning(f"Failed to create EncryptionJob: {e}")
+            return None
+    
+    async def _update_job_progress(
+        self,
+        video_id: int,
+        bytes_processed: int,
+        progress_percent: float,
+        bytes_total: int,
+        encrypt_speed: int = 0,
+    ) -> None:
+        """Update EncryptionJob progress.
+        
+        Args:
+            video_id: Video ID
+            bytes_processed: Bytes encrypted so far
+            progress_percent: Progress percentage (0-100)
+            bytes_total: Total bytes to encrypt
+            encrypt_speed: Encryption speed in bytes/sec
+        """
+        try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.repositories import EncryptionJobRepository, PipelineSnapshotRepository
+            
+            with get_db_session() as session:
+                job_repo = EncryptionJobRepository(session)
+                if self._job_id:
+                    job_repo.update_progress(self._job_id, bytes_processed, encrypt_speed)
+                
+                # Also update pipeline snapshot
+                snapshot_repo = PipelineSnapshotRepository(session)
+                snapshot_repo.update_stage(
+                    video_id=video_id,
+                    stage="encrypt",
+                    status="active",
+                    progress_percent=progress_percent,
+                    stage_speed=encrypt_speed,
+                )
+                snapshot_repo.update_bytes_metrics(
+                    video_id=video_id,
+                    encrypted_bytes=bytes_processed,
+                )
+        except Exception as e:
+            logger.debug(f"Failed to update EncryptionJob progress: {e}")
+    
+    async def _complete_encryption_job(
+        self,
+        job_id: int,
+        lit_cid: Optional[str] = None,
+    ) -> None:
+        """Mark EncryptionJob as completed.
+        
+        Args:
+            job_id: Job ID
+            lit_cid: Lit Protocol CID (if available)
+        """
+        try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.repositories import EncryptionJobRepository
+            
+            with get_db_session() as session:
+                repo = EncryptionJobRepository(session)
+                repo.update_status(job_id, "completed", lit_cid=lit_cid)
+                logger.debug(f"Completed EncryptionJob {job_id}")
+        except Exception as e:
+            logger.warning(f"Failed to complete EncryptionJob: {e}")
+    
+    async def _fail_encryption_job(self, job_id: int, error_message: str) -> None:
+        """Mark EncryptionJob as failed.
+        
+        Args:
+            job_id: Job ID
+            error_message: Error description
+        """
+        try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.repositories import EncryptionJobRepository
+            
+            with get_db_session() as session:
+                repo = EncryptionJobRepository(session)
+                repo.update_status(job_id, "failed", error_message=error_message)
+                logger.debug(f"Failed EncryptionJob {job_id}: {error_message}")
+        except Exception as e:
+            logger.warning(f"Failed to mark EncryptionJob as failed: {e}")
+    
+    async def _update_pipeline_snapshot(
+        self,
+        video_id: int,
+        stage: str,
+        progress_percent: float,
+        status: str = "active",
+        error: Optional[str] = None,
+    ) -> None:
+        """Update PipelineSnapshot for TUI dashboard.
+        
+        Args:
+            video_id: Video ID
+            stage: Current stage name
+            progress_percent: Stage progress (0-100)
+            status: Overall status
+            error: Error message if failed
+        """
+        try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.repositories import PipelineSnapshotRepository
+            
+            with get_db_session() as session:
+                repo = PipelineSnapshotRepository(session)
+                
+                if status == "failed" and error:
+                    repo.mark_error(video_id, stage, error)
+                elif status == "completed":
+                    repo.mark_completed(video_id)
+                else:
+                    repo.update_stage(
+                        video_id=video_id,
+                        stage=stage,
+                        status=status,
+                        progress_percent=progress_percent,
+                    )
+        except Exception as e:
+            logger.debug(f"Failed to update PipelineSnapshot: {e}")

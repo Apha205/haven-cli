@@ -30,6 +30,7 @@ class EventType(Enum):
     ANALYSIS_COMPLETE = auto()        # e_analysis_complete
     ANALYSIS_FAILED = auto()          # e_analysis_failed
     ENCRYPT_REQUESTED = auto()        # e_encrypt_requested
+    ENCRYPT_PROGRESS = auto()         # e_encrypt_progress
     ENCRYPT_COMPLETE = auto()         # e_encrypt_complete
     UPLOAD_REQUESTED = auto()         # e_upload_requested
     UPLOAD_PROGRESS = auto()          # e_upload_progress
@@ -37,6 +38,7 @@ class EventType(Enum):
     UPLOAD_FAILED = auto()            # e_upload_failed
     SYNC_REQUESTED = auto()           # e_sync_to_arkiv
     SYNC_COMPLETE = auto()            # e_sync_complete
+    DOWNLOAD_PROGRESS = auto()        # e_download_progress
     
     # Pipeline lifecycle events
     PIPELINE_STARTED = auto()

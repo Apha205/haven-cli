@@ -43,6 +43,8 @@ class ExitCode:
     INVALID_ARGUMENT = 7
     NOT_FOUND = 8
     PERMISSION_DENIED = 9
+    MISSING_DEPENDENCY = 10
+    RUNTIME_ERROR = 11
     
     # Signal-based exits (128 + signal number)
     CANCELLED = 130  # Ctrl+C (SIGINT = 2)
@@ -68,6 +70,8 @@ class ExitCode:
             cls.INVALID_ARGUMENT: "INVALID_ARGUMENT",
             cls.NOT_FOUND: "NOT_FOUND",
             cls.PERMISSION_DENIED: "PERMISSION_DENIED",
+            cls.MISSING_DEPENDENCY: "MISSING_DEPENDENCY",
+            cls.RUNTIME_ERROR: "RUNTIME_ERROR",
             cls.CANCELLED: "CANCELLED",
         }
         return names.get(code, f"UNKNOWN({code})")
@@ -93,6 +97,8 @@ class ExitCode:
             cls.INVALID_ARGUMENT: "Invalid command-line argument",
             cls.NOT_FOUND: "Requested resource not found",
             cls.PERMISSION_DENIED: "Permission denied",
+            cls.MISSING_DEPENDENCY: "Required dependency not installed",
+            cls.RUNTIME_ERROR: "Runtime error during execution",
             cls.CANCELLED: "Operation cancelled by user",
         }
         return descriptions.get(code, f"Unknown exit code: {code}")

@@ -1,0 +1,541 @@
+"""Forum-based magnet link source.
+
+This module provides ForumScraperSource, which extracts magnet links from
+forum-based torrent sites. It's designed to work with PHPBB-style forums
+that follow a common pattern.
+
+The workflow:
+1. Fetch forum listing page (e.g., thread0806.php?fid=26)
+2. Extract thread URLs from the listing
+3. Fetch each thread page
+4. Extract infohash from "特徵全碼" field
+5. Optionally fetch full magnet link from rmdown.com (includes trackers)
+6. Build magnet link from infohash or use rmdown magnet link
+
+Configuration:
+    domain: Forum domain (e.g., "sample.com")
+    forum_id: Forum ID (fid parameter)
+    max_threads: Maximum number of threads to fetch
+    listing_url_template: Template for listing page URL
+    thread_url_template: Template for thread page URL
+    infohash_pattern: Regex pattern to extract infohash
+    title_pattern: Regex pattern to extract title
+    size_pattern: Regex pattern to extract size
+    use_rmdown: Whether to fetch full magnet link from rmdown.com (includes trackers)
+    rmdown_url_template: Template for rmdown.com URL
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
+from haven_cli.plugins.builtin.bittorrent.sources.base import (
+    MagnetLink,
+    MagnetSource,
+    SourceConfig,
+    SourceHealth,
+    SourceHealthStatus,
+)
+from haven_cli.plugins.builtin.bittorrent.sources.extraction import (
+    ExtractionContext,
+    ExtractionPipeline,
+)
+from haven_cli.plugins.builtin.bittorrent.sources.steps import (
+    BuildMagnetLinkStep,
+    ExtractTextStep,
+    FetchHtmlStep,
+    RegexStep,
+    SelectElementsStep,
+)
+
+
+@dataclass
+class ForumSourceConfig(SourceConfig):
+    """Configuration for forum-based magnet sources.
+    
+    Attributes:
+        domain: Forum domain (e.g., "sample.com")
+        forum_id: Forum ID (fid parameter)
+        max_threads: Maximum number of threads to fetch
+        listing_url_template: Template for listing page URL
+        thread_url_template: Template for thread page URL
+        infohash_pattern: Regex pattern to extract infohash
+        title_pattern: Regex pattern to extract title
+        size_pattern: Regex pattern to extract size
+        use_rmdown: Whether to fetch full magnet link from rmdown.com (includes trackers)
+        rmdown_url_template: Template for rmdown.com URL
+    """
+    
+    domain: str = ""
+    forum_id: str = ""
+    max_threads: int = 10
+    listing_url_template: str = "https://{domain}/thread0806.php?fid={forum_id}"
+    thread_url_template: str = "https://{domain}{thread_path}"
+    infohash_pattern: str = r"【特徵全碼】：([A-Fa-f0-9]{40})"
+    title_pattern: str = r"<title>(.+?)</title>"
+    size_pattern: str = r"【影片大小】：([\d.]+)(GB|MB|KB)"
+    use_rmdown: bool = True
+    rmdown_url_template: str = "https://rmdown.com/link.php?hash={infohash}"
+    
+    def __post_init__(self) -> None:
+        """Set default name if not provided."""
+        if not self.name:
+            self.name = f"forum_{self.domain}_{self.forum_id}"
+
+
+class ForumScraperSource(MagnetSource):
+    """Magnet source that scrapes forum-based torrent sites.
+    
+    This source is designed for PHPBB-style forums that follow a common
+    pattern for organizing torrent threads. It's not opinionated about
+    specific websites - the user configures the domain and forum ID.
+    
+    When use_rmdown is enabled (default), this source will fetch the full
+    magnet link from rmdown.com which includes multiple tracker announce URLs.
+    This is important for initial peer discovery, especially for less popular
+    torrents where DHT can be slow to find peers.
+    
+    Example:
+        config = ForumSourceConfig(
+            name="sample_video",
+            domain="sample.com",
+            forum_id="1",
+            max_threads=5,
+            use_rmdown=True,  # Fetch full magnet with trackers
+        )
+        
+        source = ForumScraperSource(config=config)
+        links = await source.search("")
+    """
+    
+    def __init__(self, config: ForumSourceConfig) -> None:
+        """Initialize the forum scraper source.
+        
+        Args:
+            config: Forum source configuration
+        """
+        super().__init__(config)
+        self._forum_config = config
+        self._listing_pipeline: Optional[ExtractionPipeline] = None
+        self._thread_pipeline: Optional[ExtractionPipeline] = None
+    
+    @property
+    def forum_config(self) -> ForumSourceConfig:
+        """Get the forum configuration."""
+        return self._forum_config
+    
+    async def initialize(self) -> bool:
+        """Initialize the source and build pipelines."""
+        if self._initialized:
+            return True
+        
+        try:
+            # Build pipelines
+            self._build_pipelines()
+            self._initialized = True
+            return True
+        except Exception as e:
+            print(f"Failed to initialize forum source: {e}")
+            return False
+    
+    def _build_pipelines(self) -> None:
+        """Build extraction pipelines for forum scraping."""
+        # Pipeline for extracting thread URLs from listing page
+        self._listing_pipeline = ExtractionPipeline([
+            FetchHtmlStep(
+                url_template=self._forum_config.listing_url_template,
+            ),
+            SelectElementsStep(selector="tr.tr3.t_one.tac h3 a"),
+            # Extract thread URLs and titles
+            # This will be handled in custom logic
+        ], name="forum_listing")
+        
+        # Pipeline for extracting magnet info from thread page
+        self._thread_pipeline = ExtractionPipeline([
+            FetchHtmlStep(
+                url_template=self._forum_config.thread_url_template,
+            ),
+            # Extract infohash
+            RegexStep(
+                pattern=self._forum_config.infohash_pattern,
+                output_key="infohash",
+            ),
+            # Extract title
+            RegexStep(
+                pattern=self._forum_config.title_pattern,
+                output_key="title",
+            ),
+            # Extract size
+            RegexStep(
+                pattern=self._forum_config.size_pattern,
+                output_key="size_text",
+            ),
+            # Build magnet link
+            BuildMagnetLinkStep(
+                source_name=self.name,
+            ),
+        ], name="forum_thread")
+    
+    async def search(self, query: str) -> List[MagnetLink]:
+        """Search for magnet links from the forum.
+        
+        Args:
+            query: Search query (ignored for forum sources, uses latest threads)
+            
+        Returns:
+            List of magnet links
+        """
+        if not self.enabled:
+            return []
+        
+        if not self._initialized:
+            await self.initialize()
+        
+        # Fetch listing page
+        listing_url = self._forum_config.listing_url_template.format(
+            domain=self._forum_config.domain,
+            forum_id=self._forum_config.forum_id,
+        )
+        
+        from haven_cli.plugins.builtin.bittorrent.sources.steps import FetchHtmlStep
+        
+        fetch_step = FetchHtmlStep(url_template=listing_url)
+        context = await fetch_step.execute(ExtractionContext())
+        
+        if not context.raw_html:
+            print(f"Failed to fetch listing page: {listing_url}")
+            return []
+        
+        # Extract thread URLs
+        thread_urls = self._extract_thread_urls(context.raw_html)
+        
+        if not thread_urls:
+            print("No thread URLs found on listing page")
+            return []
+        
+        # Limit to max_threads
+        thread_urls = thread_urls[:self._forum_config.max_threads]
+        
+        print(f"Found {len(thread_urls)} threads, processing...")
+        
+        # Process each thread
+        all_magnets: List[MagnetLink] = []
+        for thread_url in thread_urls:
+            try:
+                magnets = await self._process_thread(thread_url)
+                all_magnets.extend(magnets)
+            except Exception as e:
+                print(f"Error processing thread {thread_url}: {e}")
+        
+        return all_magnets
+    
+    def _extract_thread_urls(self, html: str) -> List[str]:
+        """Extract thread URLs from forum listing page.
+        
+        Args:
+            html: HTML content of listing page
+            
+        Returns:
+            List of thread URLs
+        """
+        from bs4 import BeautifulSoup
+        
+        soup = BeautifulSoup(html, "html.parser")
+        urls = []
+        
+        # Find all thread links in the listing
+        # Pattern: /htm_data/YYMM/fid/threadid.html
+        for link in soup.select("tr.tr3.t_one.tac h3 a"):
+            href = link.get("href", "")
+            if href.startswith("/htm_data/") and href.endswith(".html"):
+                # Build full URL
+                full_url = f"https://{self._forum_config.domain}{href}"
+                urls.append(full_url)
+        
+        return urls
+    
+    async def _process_thread(self, thread_url: str) -> List[MagnetLink]:
+        """Process a single thread page to extract magnet links.
+        
+        Args:
+            thread_url: URL of the thread page
+            
+        Returns:
+            List of magnet links from this thread
+        """
+        from haven_cli.plugins.builtin.bittorrent.sources.steps import FetchHtmlStep
+        
+        # Fetch thread page
+        fetch_step = FetchHtmlStep(url_template=thread_url)
+        context = await fetch_step.execute(ExtractionContext())
+        
+        if not context.raw_html:
+            print(f"Failed to fetch thread page: {thread_url}")
+            return []
+        
+        # Extract title
+        title_match = re.search(self._forum_config.title_pattern, context.raw_html)
+        title = title_match.group(1) if title_match else ""
+        
+        # Clean up title (remove forum name, etc.)
+        title = self._clean_title(title)
+        
+        # Extract size
+        size = 0
+        size_match = re.search(self._forum_config.size_pattern, context.raw_html)
+        if size_match:
+            size_value = float(size_match.group(1))
+            size_unit = size_match.group(2).upper()
+            
+            multipliers = {
+                "KB": 1024,
+                "MB": 1024 ** 2,
+                "GB": 1024 ** 3,
+            }
+            size = int(size_value * multipliers.get(size_unit, 1))
+        
+        # Priority 1: Extract rmdown link directly from the page
+        rmdown_link = None
+        if self._forum_config.use_rmdown:
+            rmdown_match = re.search(
+                r'(https?://(?:www\.)?rmdown\.com/link\.php\?hash=[A-Za-z0-9]+)',
+                context.raw_html,
+            )
+            if rmdown_match:
+                rmdown_link = rmdown_match.group(1)
+        
+        # Get magnet URI and infohash - prioritize rmdown
+        magnet_uri = None
+        infohash = None
+        
+        if rmdown_link:
+            # Get full magnet from rmdown (includes trackers)
+            magnet_uri = await self._get_magnet_from_rmdown(rmdown_link)
+            if magnet_uri:
+                # Extract infohash from magnet URI
+                infohash_match = re.search(r'xt=urn:btih:([A-Fa-f0-9]{40})', magnet_uri, re.IGNORECASE)
+                if infohash_match:
+                    infohash = infohash_match.group(1).lower()
+        
+        # Priority 2: Fall back to infohash pattern if no rmdown
+        if not infohash:
+            infohash_match = re.search(
+                self._forum_config.infohash_pattern,
+                context.raw_html,
+            )
+            if infohash_match:
+                infohash = infohash_match.group(1).lower()
+        
+        if not infohash:
+            print(f"No infohash found in thread: {thread_url}")
+            return []
+        
+        # If we still don't have magnet URI, build from infohash
+        if not magnet_uri:
+            magnet_uri = await self._get_magnet_uri(infohash, rmdown_link)
+        
+        # Create MagnetLink
+        try:
+            magnet = MagnetLink(
+                infohash=infohash,
+                uri=magnet_uri,
+                title=title,
+                size=size,
+                category="video",
+                source_name=self.name,
+                metadata={
+                    "thread_url": thread_url,
+                    "domain": self._forum_config.domain,
+                    "forum_id": self._forum_config.forum_id,
+                    "from_rmdown": rmdown_link is not None,
+                },
+            )
+            tracker_count = magnet_uri.count("&tr=") if "&tr=" in magnet_uri else 0
+            print(f"Extracted: {title[:50]}... ({size / (1024**3):.2f} GB) - {tracker_count} trackers")
+            return [magnet]
+        except ValueError as e:
+            print(f"Failed to create magnet link: {e}")
+            return []
+    
+    async def _get_magnet_from_rmdown(self, rmdown_link: str) -> Optional[str]:
+        """Fetch magnet URI from rmdown.com.
+        
+        Args:
+            rmdown_link: The rmdown link extracted from the forum page
+            
+        Returns:
+            Magnet URI string or None if failed
+        """
+        try:
+            from haven_cli.plugins.builtin.bittorrent.sources.steps import FetchHtmlStep
+            
+            # First, fetch the rmdown page to get the reff parameter
+            fetch_step = FetchHtmlStep(url_template=rmdown_link)
+            context = await fetch_step.execute(ExtractionContext())
+            
+            if context.raw_html:
+                # Extract ref from URL or hidden field
+                ref_match = re.search(r'hash=([A-Za-z0-9]+)', rmdown_link)
+                if not ref_match:
+                    ref_match = re.search(r'name="ref"[^>]*value="([^"]+)"', context.raw_html, re.IGNORECASE)
+                
+                # Extract reff from hidden field (case-insensitive for NAME= vs name=)
+                reff_match = re.search(r'name="reff"[^>]*value="([^"]+)"', context.raw_html, re.IGNORECASE)
+                
+                if ref_match and reff_match:
+                    ref = ref_match.group(1)
+                    reff = reff_match.group(1)
+                    
+                    # Fetch the magnet link from download.php
+                    import urllib.parse
+                    magnet_url = f"https://rmdown.com/download.php?action=magnet&ref={ref}&reff={urllib.parse.quote(reff)}"
+                    
+                    magnet_step = FetchHtmlStep(url_template=magnet_url)
+                    magnet_context = await magnet_step.execute(ExtractionContext())
+                    
+                    if magnet_context.raw_html:
+                        # The response is the magnet link directly
+                        magnet_uri = magnet_context.raw_html.strip()
+                        if magnet_uri.startswith('magnet:'):
+                            return magnet_uri
+                        else:
+                            print(f"Warning: rmdown returned non-magnet response: {magnet_uri[:100]}")
+                else:
+                    print(f"Warning: Could not extract ref/reff from rmdown page")
+        except Exception as e:
+            print(f"Warning: Failed to fetch magnet from rmdown: {e}")
+        
+        return None
+    
+    async def _get_magnet_uri(self, infohash: str, rmdown_link: Optional[str] = None) -> str:
+        """Get magnet URI, either from rmdown or build from infohash.
+        
+        Args:
+            infohash: The torrent infohash
+            rmdown_link: The rmdown link extracted from the forum page (optional)
+            
+        Returns:
+            Magnet URI string
+        """
+        if self._forum_config.use_rmdown and rmdown_link:
+            magnet_uri = await self._get_magnet_from_rmdown(rmdown_link)
+            if magnet_uri:
+                return magnet_uri
+        
+        # Fallback: build magnet link from infohash with public trackers
+        # These are common public trackers that help with peer discovery
+        public_trackers = [
+            "udp://tracker.opentrackr.org:1337/announce",
+            "udp://open.stealth.si:80/announce",
+            "udp://tracker.torrent.eu.org:451/announce",
+            "udp://tracker.bittor.pw:1337/announce",
+            "udp://public.popcorn-tracker.org:6969/announce",
+            "udp://tracker.dler.org:6969/announce",
+            "udp://exodus.desync.com:6969/announce",
+            "udp://open.demonii.com:1337/announce",
+        ]
+        
+        tracker_params = "&tr=".join(public_trackers)
+        return f"magnet:?xt=urn:btih:{infohash}&tr={tracker_params}"
+    
+    def _clean_title(self, title: str) -> str:
+        """Clean up thread title.
+        
+        Args:
+            title: Raw title from HTML
+            
+        Returns:
+            Cleaned title
+        """
+        # Remove forum name and other suffixes
+        title = re.sub(r"\s*-\s*.*?\|\s*.*$", "", title)
+        title = re.sub(r"\s*-\s*.*?-\s*.*$", "", title)
+        title = title.strip()
+        
+        return title
+    
+    async def health_check(self) -> SourceHealth:
+        """Check the health of this source.
+        
+        Returns:
+            SourceHealth with status and details
+        """
+        if not self.enabled:
+            return SourceHealth(
+                status=SourceHealthStatus.UNKNOWN,
+                message="Source is disabled",
+            )
+        
+        try:
+            # Try to fetch listing page
+            listing_url = self._forum_config.listing_url_template.format(
+                domain=self._forum_config.domain,
+                forum_id=self._forum_config.forum_id,
+            )
+            
+            from haven_cli.plugins.builtin.bittorrent.sources.steps import FetchHtmlStep
+            
+            fetch_step = FetchHtmlStep(url_template=listing_url)
+            context = await fetch_step.execute(ExtractionContext())
+            
+            if not context.raw_html:
+                return SourceHealth(
+                    status=SourceHealthStatus.UNHEALTHY,
+                    message=f"Failed to fetch listing page: {listing_url}",
+                )
+            
+            # Check if we can find thread URLs
+            thread_urls = self._extract_thread_urls(context.raw_html)
+            
+            if thread_urls:
+                return SourceHealth(
+                    status=SourceHealthStatus.HEALTHY,
+                    message=f"Found {len(thread_urls)} threads",
+                    details={
+                        "thread_count": len(thread_urls),
+                        "listing_url": listing_url,
+                        "use_rmdown": self._forum_config.use_rmdown,
+                    },
+                )
+            else:
+                return SourceHealth(
+                    status=SourceHealthStatus.DEGRADED,
+                    message="No thread URLs found",
+                    details={"listing_url": listing_url},
+                )
+        except Exception as e:
+            return SourceHealth(
+                status=SourceHealthStatus.UNHEALTHY,
+                message=f"Health check failed: {e}",
+                details={"error": str(e)},
+            )
+    
+    def validate_config(self) -> List[str]:
+        """Validate the forum source configuration.
+        
+        Returns:
+            List of validation error messages (empty if valid)
+        """
+        errors = super().validate_config()
+        
+        if not self._forum_config.domain:
+            errors.append("Domain is required")
+        
+        if not self._forum_config.forum_id:
+            errors.append("Forum ID is required")
+        
+        return errors
+    
+    def __repr__(self) -> str:
+        """String representation of the source."""
+        return (
+            f"ForumScraperSource("
+            f"name={self.name!r}, "
+            f"domain={self._forum_config.domain!r}, "
+            f"forum_id={self._forum_config.forum_id!r}, "
+            f"enabled={self.enabled}, "
+            f"use_rmdown={self._forum_config.use_rmdown}"
+            f")"
+        )

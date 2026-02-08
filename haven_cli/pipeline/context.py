@@ -69,6 +69,7 @@ class AIAnalysisResult:
     timestamps: List[Dict[str, Any]] = field(default_factory=list)
     tags: Dict[str, float] = field(default_factory=dict)
     confidence: float = 0.0
+    ai_json_path: Optional[str] = None  # Path to the .AI.json file
 
 
 @dataclass
@@ -96,6 +97,7 @@ class UploadResult:
     piece_cid: str = ""
     transaction_hash: str = ""
     encryption_metadata: Optional[EncryptionMetadata] = None
+    vlm_json_cid: Optional[str] = None  # CID of the uploaded VLM AI.json file
 
 
 @dataclass

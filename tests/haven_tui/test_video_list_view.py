@@ -697,3 +697,157 @@ class TestVideoListPerformance:
         
         # Should format 1000 speeds in less than 1 second
         assert elapsed < 1.0
+
+
+# =============================================================================
+# Speed Graph Toggle Tests (Task 5.4)
+# =============================================================================
+
+class TestVideoListFooterGraphState:
+    """Tests for VideoListFooter graph visibility state."""
+    
+    def test_footer_with_graph_visible(self):
+        """Test footer shows graph ON state."""
+        footer = VideoListFooter(show_graph=True)
+        assert footer._show_graph is True
+    
+    def test_footer_with_graph_hidden(self):
+        """Test footer shows graph OFF state."""
+        footer = VideoListFooter(show_graph=False)
+        assert footer._show_graph is False
+    
+    def test_footer_set_show_graph(self):
+        """Test footer can toggle graph state."""
+        footer = VideoListFooter(show_graph=False)
+        assert footer._show_graph is False
+        
+        footer.set_show_graph(True)
+        assert footer._show_graph is True
+        
+        footer.set_show_graph(False)
+        assert footer._show_graph is False
+
+
+class TestSpeedGraphToggle:
+    """Tests for speed graph toggle functionality (Task 5.4)."""
+    
+    def test_screen_has_graph_binding(self, config):
+        """Test that 'g' key binding exists for graph toggle."""
+        screen = VideoListScreen(config=config)
+        bindings = screen.BINDINGS
+        binding_keys = [b[0] for b in bindings]
+        assert "g" in binding_keys
+    
+    def test_screen_has_show_graph_reactive(self, config):
+        """Test that show_graph reactive property exists."""
+        screen = VideoListScreen(config=config)
+        assert hasattr(screen, 'show_graph')
+    
+    def test_screen_show_graph_default_from_config(self, config):
+        """Test that show_graph defaults to config value (True by default)."""
+        screen = VideoListScreen(config=config)
+        # Default config has show_speed_graphs=True
+        assert screen.show_graph is True
+    
+    def test_screen_show_graph_from_config_true(self):
+        """Test that show_graph can be set to True from config."""
+        config_with_graph = HavenTUIConfig(
+            display=DisplayConfig(show_speed_graphs=True)
+        )
+        screen = VideoListScreen(config=config_with_graph)
+        assert screen.show_graph is True
+    
+    def test_screen_show_graph_from_config_false(self):
+        """Test that show_graph can be set to False from config."""
+        config_no_graph = HavenTUIConfig(
+            display=DisplayConfig(show_speed_graphs=False)
+        )
+        screen = VideoListScreen(config=config_no_graph)
+        assert screen.show_graph is False
+    
+    def test_screen_has_toggle_graph_action(self, config):
+        """Test that action_toggle_graph method exists and is callable."""
+        screen = VideoListScreen(config=config)
+        assert hasattr(screen, 'action_toggle_graph')
+        assert callable(screen.action_toggle_graph)
+    
+    def test_screen_has_selected_video_id(self, config):
+        """Test that _selected_video_id tracking exists."""
+        screen = VideoListScreen(config=config)
+        assert hasattr(screen, '_selected_video_id')
+        assert screen._selected_video_id is None
+    
+    def test_screen_has_selected_stage(self, config):
+        """Test that _selected_stage tracking exists."""
+        screen = VideoListScreen(config=config)
+        assert hasattr(screen, '_selected_stage')
+        assert screen._selected_stage == "download"
+    
+    def test_screen_has_on_video_select(self, config):
+        """Test that _on_video_select callback exists."""
+        screen = VideoListScreen(config=config)
+        assert hasattr(screen, '_on_video_select')
+        assert callable(screen._on_video_select)
+    
+    def test_screen_updates_selected_video_on_select(self, config):
+        """Test that _on_video_select updates _selected_video_id."""
+        screen = VideoListScreen(config=config)
+        assert screen._selected_video_id is None
+        
+        screen._on_video_select(123)
+        assert screen._selected_video_id == 123
+        
+        screen._on_video_select(456)
+        assert screen._selected_video_id == 456
+    
+    def test_screen_has_speed_history_repo_param(self):
+        """Test that speed_history_repo parameter is accepted."""
+        mock_repo = MagicMock()
+        screen = VideoListScreen(
+            config=HavenTUIConfig(),
+            speed_history_repo=mock_repo,
+        )
+        assert screen._speed_history_repo == mock_repo
+
+
+class TestSpeedGraphIntegration:
+    """Integration tests for speed graph with video list."""
+    
+    @pytest.mark.asyncio
+    async def test_view_accepts_speed_history_repo(self, state_manager, config):
+        """Test that VideoListView accepts speed_history_repo parameter."""
+        mock_repo = MagicMock()
+        view = VideoListView(
+            state_manager=state_manager,
+            config=config,
+            speed_history_repo=mock_repo,
+        )
+        assert view.speed_history_repo == mock_repo
+    
+    @pytest.mark.asyncio
+    async def test_view_creates_screen_with_repo(self, state_manager, config):
+        """Test that VideoListView passes repo to VideoListScreen."""
+        mock_repo = MagicMock()
+        view = VideoListView(
+            state_manager=state_manager,
+            config=config,
+            speed_history_repo=mock_repo,
+        )
+        screen = view.create_screen()
+        assert screen._speed_history_repo == mock_repo
+    
+    def test_screen_has_graph_container_css(self, config):
+        """Test that CSS includes graph-container styles."""
+        screen = VideoListScreen(config=config)
+        css = screen.DEFAULT_CSS
+        
+        assert "#graph-container" in css
+        assert "dock: right" in css
+    
+    def test_screen_has_main_content_horizontal_layout(self, config):
+        """Test that main-content uses horizontal layout for side-by-side."""
+        screen = VideoListScreen(config=config)
+        css = screen.DEFAULT_CSS
+        
+        assert "#main-content" in css
+        assert "layout: horizontal" in css

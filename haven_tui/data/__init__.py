@@ -19,6 +19,25 @@ from haven_tui.data.refresher import (
     DataRefresher,
     RefreshMode,
 )
+from haven_tui.data.download_tracker import (
+    DownloadStatus,
+    DownloadProgress,
+    DownloadProgressTracker,
+    YouTubeProgressAdapter,
+    BitTorrentProgressAdapter,
+    get_download_tracker,
+    reset_download_tracker,
+    format_bytes,
+    format_duration,
+)
+from haven_tui.data.torrent_bridge import (
+    BitTorrentProgressBridge,
+)
+from haven_tui.data.speed_aggregator import (
+    SpeedAggregator,
+    SpeedSample,
+    SpeedAggregate,
+)
 
 __all__ = [
     "PipelineSnapshotRepository",
@@ -29,4 +48,17 @@ __all__ = [
     "TUIStateManager",
     "DataRefresher",
     "RefreshMode",
+    "DownloadStatus",
+    "DownloadProgress",
+    "DownloadProgressTracker",
+    "YouTubeProgressAdapter",
+    "BitTorrentProgressAdapter",
+    "BitTorrentProgressBridge",
+    "get_download_tracker",
+    "reset_download_tracker",
+    "format_bytes",
+    "format_duration",
+    "SpeedAggregator",
+    "SpeedSample",
+    "SpeedAggregate",
 ]

@@ -5,6 +5,7 @@ These tests verify that the YouTube plugin correctly:
 2. Discovers videos from channels and playlists
 3. Archives videos using yt-dlp
 4. Handles errors gracefully
+5. Reports download progress through DownloadProgressTracker
 """
 
 import asyncio
@@ -12,9 +13,9 @@ import json
 import os
 import pytest
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch, call
 
-from haven_cli.plugins.builtin.youtube import YouTubePlugin, YouTubeConfig
+from haven_cli.plugins.builtin.youtube import YouTubePlugin, YouTubeConfig, _YTDLPLogger
 from haven_cli.plugins.base import MediaSource, ArchiveResult, PluginCapability
 
 
@@ -69,6 +70,50 @@ class TestYouTubeConfig:
         assert home in str(config.cookies_file)
 
 
+class TestYTDLPLogger:
+    """Test yt-dlp logger that prevents TUI pollution."""
+    
+    def test_debug_filters_progress(self, caplog):
+        """Test that debug filters out progress messages."""
+        logger = _YTDLPLogger()
+        with caplog.at_level("DEBUG"):
+            logger.debug("[download] 50% progress")
+            logger.debug("Some other debug message")
+        
+        # Progress messages should be filtered
+        assert "[download] 50%" not in caplog.text
+        # Other messages should pass through
+        assert "Some other debug" in caplog.text
+    
+    def test_info_filters_progress(self, caplog):
+        """Test that info filters out progress messages."""
+        logger = _YTDLPLogger()
+        with caplog.at_level("INFO"):
+            logger.info("[download] Destination: file.mp4")
+            logger.info("Video download started")
+        
+        # Progress messages should be filtered
+        assert "[download] Destination" not in caplog.text
+        # Other messages should pass through
+        assert "Video download started" in caplog.text
+    
+    def test_warning_passes_through(self, caplog):
+        """Test that warnings pass through."""
+        logger = _YTDLPLogger()
+        with caplog.at_level("WARNING"):
+            logger.warning("Warning: rate limited")
+        
+        assert "rate limited" in caplog.text
+    
+    def test_error_passes_through(self, caplog):
+        """Test that errors pass through."""
+        logger = _YTDLPLogger()
+        with caplog.at_level("ERROR"):
+            logger.error("Error: video unavailable")
+        
+        assert "video unavailable" in caplog.text
+
+
 class TestYouTubePlugin:
     """Test YouTubePlugin functionality."""
     
@@ -83,6 +128,13 @@ class TestYouTubePlugin:
             "output_dir": str(tmp_path / "downloads"),
         }
         return YouTubePlugin(config=config)
+    
+    @pytest.fixture
+    def mock_progress_tracker(self):
+        """Create a mock progress tracker."""
+        tracker = Mock()
+        tracker.report_progress = Mock()
+        return tracker
     
     @pytest.fixture
     async def initialized_plugin(self, plugin):
@@ -119,6 +171,11 @@ class TestYouTubePlugin:
     def test_plugin_name_property(self, plugin):
         """Test plugin name property."""
         assert plugin.name == "YouTubePlugin"
+    
+    def test_set_progress_tracker(self, plugin, mock_progress_tracker):
+        """Test setting progress tracker."""
+        plugin.set_progress_tracker(mock_progress_tracker)
+        assert plugin._progress_tracker is mock_progress_tracker
     
     @pytest.mark.asyncio
     async def test_initialize_success(self, plugin, tmp_path):
@@ -292,6 +349,89 @@ class TestYouTubePlugin:
         assert result.success is True
         assert result.metadata.get("already_archived") is True
     
+    @pytest.mark.asyncio
+    async def test_archive_with_progress_tracker_success(self, plugin, mock_progress_tracker, tmp_path):
+        """Test archive reports progress through tracker on success."""
+        # Initialize plugin
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_proc = AsyncMock()
+            mock_proc.returncode = 0
+            mock_proc.communicate.return_value = (b"2024.01.01\n", b"")
+            mock_exec.return_value = mock_proc
+            
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = Mock(returncode=1)
+                await plugin.initialize()
+        
+        # Set progress tracker
+        plugin.set_progress_tracker(mock_progress_tracker)
+        
+        source = MediaSource(
+            source_id="test123",
+            media_type="youtube",
+            uri="https://youtube.com/watch?v=test123",
+            title="Test Video",
+            metadata={"channel_name": "TestChannel"},
+        )
+        
+        # Create the output file to simulate successful download
+        output_dir = tmp_path / "downloads" / "TestChannel"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_file = output_dir / "video.mp4"
+        output_file.write_bytes(b"fake video content")
+        
+        # Mock the download to succeed
+        with patch.object(plugin, "_download_video_with_progress") as mock_download:
+            async_mock = AsyncMock()
+            async_mock.return_value = {
+                "success": True,
+                "output_path": str(output_file),
+            }
+            mock_download.side_effect = async_mock
+            
+            result = await plugin.archive(source)
+        
+        assert result.success is True
+    
+    @pytest.mark.asyncio
+    async def test_archive_with_progress_tracker_failure(self, plugin, mock_progress_tracker):
+        """Test archive reports failure through tracker."""
+        # Initialize plugin
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_proc = AsyncMock()
+            mock_proc.returncode = 0
+            mock_proc.communicate.return_value = (b"2024.01.01\n", b"")
+            mock_exec.return_value = mock_proc
+            
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = Mock(returncode=1)
+                await plugin.initialize()
+        
+        # Set progress tracker
+        plugin.set_progress_tracker(mock_progress_tracker)
+        
+        source = MediaSource(
+            source_id="test123",
+            media_type="youtube",
+            uri="https://youtube.com/watch?v=test123",
+            title="Test Video",
+            metadata={"channel_name": "TestChannel"},
+        )
+        
+        # Mock the download to fail with non-retryable error
+        with patch.object(plugin, "_download_video_with_progress") as mock_download:
+            async_mock = AsyncMock()
+            async_mock.return_value = {
+                "success": False,
+                "error": "Video unavailable",
+            }
+            mock_download.side_effect = async_mock
+            
+            result = await plugin.archive(source)
+        
+        assert result.success is False
+        assert "Video unavailable" in result.error
+    
     def test_is_retryable_error(self, plugin):
         """Test error classification."""
         # Non-retryable errors
@@ -392,6 +532,170 @@ class TestYouTubePlugin:
             data = json.load(f)
             assert "video1" in data["seen"]
             assert "video2" in data["seen"]
+    
+    @pytest.mark.asyncio
+    async def test_download_with_subprocess_success(self, plugin):
+        """Test subprocess download method."""
+        # Initialize plugin first with a patch
+        mock_proc_version = AsyncMock()
+        mock_proc_version.returncode = 0
+        mock_proc_version.communicate.return_value = (b"2024.01.01\n", b"")
+        
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc_version) as mock_exec, \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = Mock(returncode=1)
+            await plugin.initialize()
+        
+        source = MediaSource(
+            source_id="test123",
+            media_type="youtube",
+            uri="https://youtube.com/watch?v=test123",
+            title="Test Video",
+        )
+        
+        # Now mock the download subprocess call
+        mock_proc_download = AsyncMock()
+        mock_proc_download.returncode = 0
+        mock_proc_download.communicate.return_value = (
+            b"[download] Destination: /path/to/video.mp4\n",
+            b""
+        )
+        
+        # Mock os.path.exists to return True for the output file
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc_download) as mock_exec, \
+             patch("os.path.exists", return_value=True):
+            
+            result = await plugin._download_with_subprocess(
+                source, "/path/to/video.%(ext)s", 1
+            )
+        
+        assert result["success"] is True
+        assert result["output_path"] == "/path/to/video.mp4"
+
+
+class TestYouTubePluginProgressTracking:
+    """Test progress tracking integration with DownloadProgressTracker."""
+    
+    @pytest.fixture
+    def plugin(self, tmp_path):
+        """Create a YouTubePlugin instance."""
+        config = {
+            "output_dir": str(tmp_path / "downloads"),
+        }
+        return YouTubePlugin(config=config)
+    
+    @pytest.fixture
+    def mock_tracker(self):
+        """Create a mock progress tracker."""
+        tracker = Mock()
+        tracker.report_progress = Mock()
+        return tracker
+    
+    @pytest.fixture
+    def sample_source(self):
+        """Create a sample MediaSource."""
+        return MediaSource(
+            source_id="test123",
+            media_type="youtube",
+            uri="https://youtube.com/watch?v=test123",
+            title="Test Video",
+            metadata={"channel_name": "TestChannel"},
+        )
+    
+    def test_report_progress_with_tracker(self, plugin, mock_tracker):
+        """Test _report_progress calls tracker when set."""
+        from haven_tui.data.download_tracker import DownloadProgress, DownloadStatus
+        
+        plugin.set_progress_tracker(mock_tracker)
+        
+        progress = DownloadProgress(
+            source_id="test123",
+            source_type="youtube",
+            status=DownloadStatus.DOWNLOADING,
+        )
+        
+        plugin._report_progress(progress)
+        
+        mock_tracker.report_progress.assert_called_once_with(progress)
+    
+    def test_report_progress_without_tracker(self, plugin):
+        """Test _report_progress does nothing when tracker not set."""
+        from haven_tui.data.download_tracker import DownloadProgress, DownloadStatus
+        
+        progress = DownloadProgress(
+            source_id="test123",
+            source_type="youtube",
+            status=DownloadStatus.DOWNLOADING,
+        )
+        
+        # Should not raise
+        plugin._report_progress(progress)
+    
+    @pytest.mark.asyncio
+    async def test_report_failure_with_tracker(self, plugin, mock_tracker, sample_source):
+        """Test _report_failure reports to tracker when set."""
+        from haven_tui.data.download_tracker import DownloadStatus
+        
+        plugin.set_progress_tracker(mock_tracker)
+        
+        await plugin._report_failure(sample_source, "Network error")
+        
+        mock_tracker.report_progress.assert_called_once()
+        progress = mock_tracker.report_progress.call_args[0][0]
+        assert progress.source_id == "test123"
+        assert progress.status == DownloadStatus.FAILED
+        assert progress.error_message == "Network error"
+    
+    @pytest.mark.asyncio
+    async def test_report_failure_without_tracker(self, plugin, sample_source):
+        """Test _report_failure does nothing when tracker not set."""
+        # Should not raise
+        await plugin._report_failure(sample_source, "Network error")
+    
+    @pytest.mark.asyncio
+    async def test_download_video_with_progress_uses_api_when_tracker_set(self, plugin, mock_tracker):
+        """Test that download uses yt-dlp API when tracker is set."""
+        plugin.set_progress_tracker(mock_tracker)
+        
+        with patch.object(plugin, "_download_with_ytdlp_api") as mock_api:
+            async_mock = AsyncMock()
+            async_mock.return_value = {"success": True, "output_path": "/path/to/video.mp4"}
+            mock_api.side_effect = async_mock
+            
+            source = MediaSource(
+                source_id="test123",
+                media_type="youtube",
+                uri="https://youtube.com/watch?v=test123",
+                title="Test",
+            )
+            
+            result = await plugin._download_video_with_progress(source, "/path/to/video.%(ext)s")
+        
+        mock_api.assert_called_once()
+        assert result["success"] is True
+    
+    @pytest.mark.asyncio
+    async def test_download_video_with_progress_falls_back_to_subprocess(self, plugin):
+        """Test that download falls back to subprocess when API fails."""
+        with patch.object(plugin, "_download_with_ytdlp_api") as mock_api:
+            mock_api.return_value = asyncio.Future()
+            mock_api.return_value.set_result({"success": False, "error": "API error"})
+            mock_api.side_effect = Exception("API not available")
+            
+            with patch.object(plugin, "_download_with_subprocess") as mock_subprocess:
+                mock_subprocess.return_value = asyncio.Future()
+                mock_subprocess.return_value.set_result({"success": True, "output_path": "/path/to/video.mp4"})
+                
+                source = MediaSource(
+                    source_id="test123",
+                    media_type="youtube",
+                    uri="https://youtube.com/watch?v=test123",
+                    title="Test",
+                )
+                
+                result = await plugin._download_video_with_progress(source, "/path/to/video.%(ext)s")
+        
+        mock_subprocess.assert_called_once()
 
 
 class TestYouTubePluginIntegration:
@@ -428,3 +732,53 @@ class TestYouTubePluginIntegration:
             assert result is True
         except RuntimeError:
             pytest.skip("yt-dlp not installed")
+
+
+class TestYouTubeProgressAdapterUsage:
+    """Test integration with YouTubeProgressAdapter."""
+    
+    def test_progress_adapter_import(self):
+        """Test that YouTubeProgressAdapter can be imported from haven_tui."""
+        from haven_tui.data.download_tracker import YouTubeProgressAdapter
+        assert YouTubeProgressAdapter is not None
+    
+    def test_progress_adapter_converts_ytdlp_data(self):
+        """Test that adapter correctly converts yt-dlp progress data."""
+        from haven_tui.data.download_tracker import (
+            YouTubeProgressAdapter, DownloadProgressTracker, DownloadStatus
+        )
+        
+        mock_tracker = Mock(spec=DownloadProgressTracker)
+        mock_tracker.report_progress = Mock()
+        
+        adapter = YouTubeProgressAdapter(
+            tracker=mock_tracker,
+            source_id="abc123",
+            video_id=1,
+            source_uri="https://youtube.com/watch?v=abc123",
+            title="Test Video"
+        )
+        
+        # Simulate yt-dlp downloading progress
+        ytdlp_data = {
+            "status": "downloading",
+            "downloaded_bytes": 500000,
+            "total_bytes": 1000000,
+            "speed": 10000,
+            "eta": 50,
+            "filename": "test.mp4",
+        }
+        
+        adapter.report(ytdlp_data)
+        
+        mock_tracker.report_progress.assert_called_once()
+        progress = mock_tracker.report_progress.call_args[0][0]
+        
+        assert progress.source_id == "abc123"
+        assert progress.source_type == "youtube"
+        assert progress.status == DownloadStatus.DOWNLOADING
+        assert progress.downloaded == 500000
+        assert progress.total_size == 1000000
+        assert progress.progress_pct == 50.0
+        assert progress.download_rate == 10000
+        assert progress.eta_seconds == 50

@@ -16,7 +16,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Callable, Dict, List, Optional, TypeVar, TYPE_CHECKING
 
 import libtorrent as lt
 
@@ -41,6 +41,10 @@ from haven_cli.plugins.builtin.bittorrent.sources.forum import (
 )
 from haven_cli.database.connection import get_db_session
 from haven_cli.database.repositories import RepositoryFactory
+
+# Lazy imports to avoid circular dependency
+if TYPE_CHECKING:
+    from haven_tui.data.download_tracker import DownloadProgressTracker, BitTorrentProgressAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +185,9 @@ class BitTorrentPlugin(ArchiverPlugin):
         self._session_lock = asyncio.Lock()
         # Flag to indicate shutdown in progress
         self._shutdown_event = asyncio.Event()
+        # Progress tracker and bridge for unified downloads table
+        self._progress_tracker: Optional["DownloadProgressTracker"] = None
+        self._adapters: Dict[str, "BitTorrentProgressAdapter"] = {}
     
     async def _run_in_executor(
         self,
@@ -274,6 +281,18 @@ class BitTorrentPlugin(ArchiverPlugin):
                 PluginCapability.HEALTH_CHECK,
             ],
         )
+    
+    def set_progress_tracker(self, tracker: "DownloadProgressTracker") -> None:
+        """Set up progress tracker for unified downloads table.
+        
+        This should be called before initialize() to enable writing
+        download progress to the unified downloads table.
+        
+        Args:
+            tracker: The DownloadProgressTracker to report progress to
+        """
+        self._progress_tracker = tracker
+        logger.debug("Progress tracker set for BitTorrent plugin")
     
     async def initialize(self) -> None:
         """Initialize the plugin.
@@ -401,6 +420,9 @@ class BitTorrentPlugin(ArchiverPlugin):
                 logger.warning(f"Error stopping torrent {infohash}: {e}")
         
         self._active_downloads.clear()
+        
+        # Clear progress adapters
+        self._adapters.clear()
         
         # Shutdown sources with timeout
         for source in self._sources:
@@ -895,6 +917,26 @@ class BitTorrentPlugin(ArchiverPlugin):
                         downloaded_size=status.total_done,
                     )
                 )
+            
+            # Report to unified progress tracker if available
+            if self._progress_tracker:
+                try:
+                    # Lazy import to avoid circular dependency
+                    from haven_tui.data.download_tracker import BitTorrentProgressAdapter
+                    
+                    # Get or create adapter for this torrent
+                    if infohash not in self._adapters:
+                        self._adapters[infohash] = BitTorrentProgressAdapter(
+                            tracker=self._progress_tracker,
+                            infohash=infohash,
+                            magnet_uri=source.uri,
+                            title=source.metadata.get("title", ""),
+                        )
+                    
+                    adapter = self._adapters[infohash]
+                    adapter.report_status(status)
+                except Exception as e:
+                    logger.warning(f"Error reporting to progress tracker: {e}")
             
             # Check for timeout
             if self._bt_config.max_download_time > 0:

@@ -92,6 +92,7 @@ class JSRuntimeBridge:
         self._state = RuntimeState.NOT_STARTED
         self._process: Optional[asyncio.subprocess.Process] = None
         self._reader_task: Optional[asyncio.Task] = None
+        self._stderr_task: Optional[asyncio.Task] = None
         self._pending_futures: dict[str, asyncio.Future] = {}
         self._notification_handlers: dict[str, list[Callable]] = {}
         self._lock = asyncio.Lock()
@@ -359,11 +360,12 @@ class JSRuntimeBridge:
             env=env
         )
         
-        # Start reader task
+        # Start reader tasks for both stdout and stderr
         self._reader_task = asyncio.create_task(self._read_loop())
+        self._stderr_task = asyncio.create_task(self._read_stderr_loop())
     
     async def _read_loop(self) -> None:
-        """Read and process messages from the subprocess."""
+        """Read and process messages from the subprocess stdout."""
         if not self._process or not self._process.stdout:
             return
         
@@ -384,6 +386,39 @@ class JSRuntimeBridge:
             logger.error(f"Read loop error: {e}")
             self._state = RuntimeState.ERROR
             self._error_message = str(e)
+    
+    async def _read_stderr_loop(self) -> None:
+        """Read and log stderr from the subprocess.
+        
+        This is critical to prevent deadlock - if stderr buffer fills up,
+        the subprocess will block. We must consume stderr continuously.
+        """
+        if not self._process or not self._process.stderr:
+            return
+        
+        try:
+            while True:
+                line = await self._process.stderr.readline()
+                if not line:
+                    break
+                
+                try:
+                    decoded = line.decode().strip()
+                    if decoded:
+                        # Log Synapse/Lit SDK messages at appropriate level
+                        if '[Synapse]' in decoded or '[Lit]' in decoded:
+                            logger.info(f"JS: {decoded}")
+                        elif 'error' in decoded.lower() or 'ERROR' in decoded:
+                            logger.error(f"JS stderr: {decoded}")
+                        else:
+                            logger.debug(f"JS stderr: {decoded}")
+                except Exception as e:
+                    logger.debug(f"Error reading stderr: {e}")
+                    
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"Stderr read loop ended: {e}")
     
     async def _handle_message(self, message: str) -> None:
         """Handle a message from the subprocess."""
@@ -465,6 +500,15 @@ class JSRuntimeBridge:
             except asyncio.CancelledError:
                 pass
             self._reader_task = None
+        
+        # Cancel stderr reader task
+        if self._stderr_task:
+            self._stderr_task.cancel()
+            try:
+                await self._stderr_task
+            except asyncio.CancelledError:
+                pass
+            self._stderr_task = None
         
         # Terminate process
         if self._process:

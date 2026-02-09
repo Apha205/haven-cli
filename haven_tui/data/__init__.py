@@ -10,6 +10,7 @@ from haven_tui.data.repositories import (
     DownloadRepository,
     JobHistoryRepository,
     SpeedHistoryRepository,
+    AnalyticsRepository,
 )
 from haven_tui.data.event_consumer import (
     TUIEventConsumer,
@@ -44,6 +45,7 @@ __all__ = [
     "DownloadRepository",
     "JobHistoryRepository",
     "SpeedHistoryRepository",
+    "AnalyticsRepository",
     "TUIEventConsumer",
     "TUIStateManager",
     "DataRefresher",

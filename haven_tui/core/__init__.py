@@ -8,6 +8,7 @@ from haven_tui.core.pipeline_interface import (
     DownloadStats,
     RetryResult,
 )
+from haven_tui.core.controller import VideoListController, FilterResult
 
 __all__ = [
     "MetricsCollector",
@@ -18,4 +19,6 @@ __all__ = [
     "UnifiedDownload",
     "DownloadStats",
     "RetryResult",
+    "VideoListController",
+    "FilterResult",
 ]

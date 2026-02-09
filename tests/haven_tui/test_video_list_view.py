@@ -538,10 +538,20 @@ class TestAcceptanceCriteria:
         
         Verify that VideoListWidget supports multi-selection.
         """
-        widget = VideoListWidget()
+        from haven_tui.core.pipeline_interface import BatchOperations
+        
+        # Create a mock state_manager and pipeline_interface
+        mock_state_manager = MagicMock()
+        mock_pipeline = MagicMock()
+        
+        # Create batch operations
+        batch_ops = BatchOperations(mock_state_manager, mock_pipeline)
+        batch_ops.selected = {1, 2, 3}
+        
+        # Create widget with batch operations
+        widget = VideoListWidget(batch_operations=batch_ops)
         
         # Test selection tracking
-        widget._selected_video_ids = {1, 2, 3}
         selected = widget.get_selected_video_ids()
         
         assert len(selected) == 3

@@ -8,6 +8,7 @@ from haven_tui.models.video_view import (
     StageStatus,
     VideoView,
     StageInfo,
+    FilterState,
 )
 
 __all__ = [
@@ -15,4 +16,5 @@ __all__ = [
     "StageStatus",
     "VideoView",
     "StageInfo",
+    "FilterState",
 ]

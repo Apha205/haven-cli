@@ -9,6 +9,22 @@ from enum import Enum
 from typing import Optional, List, Dict, Any
 
 
+class SortField(Enum):
+    """Fields available for sorting the video list."""
+    DATE_ADDED = "date_added"
+    TITLE = "title"
+    PROGRESS = "progress"
+    SPEED = "speed"
+    SIZE = "size"
+    STAGE = "stage"
+
+
+class SortOrder(Enum):
+    """Sort order direction."""
+    ASCENDING = "asc"
+    DESCENDING = "desc"
+
+
 class PipelineStage(Enum):
     """Pipeline stages for video processing."""
     PENDING = "pending"
@@ -27,6 +43,115 @@ class StageStatus(Enum):
     ACTIVE = "active"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+@dataclass
+class FilterState:
+    """Current filter configuration for video list.
+    
+    This class holds all filter criteria that can be applied to the video list.
+    Filters can be combined (AND logic) to narrow down results.
+    
+    Attributes:
+        stage: Filter by pipeline stage (e.g., DOWNLOAD, ENCRYPT, UPLOAD)
+        plugin: Filter by plugin name (e.g., "youtube", "bittorrent")
+        status: Filter by stage status (e.g., ACTIVE, COMPLETED, FAILED)
+        search_query: Text search across title, URI, and CID
+        show_completed: Whether to include completed videos in results
+        show_failed: Whether to include failed videos in results
+        show_only_errors: If True, show only videos with errors
+    
+    Example:
+        >>> filter_state = FilterState(
+        ...     stage=PipelineStage.DOWNLOAD,
+        ...     status=StageStatus.ACTIVE,
+        ...     show_completed=False,
+        ...     search_query="big buck bunny"
+        ... )
+    """
+    stage: Optional[PipelineStage] = None
+    plugin: Optional[str] = None
+    status: Optional[StageStatus] = None
+    search_query: str = ""
+    show_completed: bool = False
+    show_failed: bool = True
+    show_only_errors: bool = False
+    
+    def is_active(self) -> bool:
+        """Check if any filter is active (non-default).
+        
+        Returns:
+            True if any filter criterion is set.
+        """
+        return (
+            self.stage is not None
+            or self.plugin is not None
+            or self.status is not None
+            or self.search_query != ""
+            or self.show_completed  # True means show completed (non-default)
+            or not self.show_failed  # False means hide failed (non-default)
+            or self.show_only_errors
+        )
+    
+    def reset(self) -> None:
+        """Reset all filters to default values."""
+        self.stage = None
+        self.plugin = None
+        self.status = None
+        self.search_query = ""
+        self.show_completed = False
+        self.show_failed = True
+        self.show_only_errors = False
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert filter state to dictionary.
+        
+        Returns:
+            Dictionary representation of filter state.
+        """
+        return {
+            "stage": self.stage.value if self.stage else None,
+            "plugin": self.plugin,
+            "status": self.status.value if self.status else None,
+            "search_query": self.search_query,
+            "show_completed": self.show_completed,
+            "show_failed": self.show_failed,
+            "show_only_errors": self.show_only_errors,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "FilterState":
+        """Create FilterState from dictionary.
+        
+        Args:
+            data: Dictionary containing filter values.
+            
+        Returns:
+            New FilterState instance.
+        """
+        stage = None
+        if data.get("stage"):
+            try:
+                stage = PipelineStage(data["stage"])
+            except ValueError:
+                pass
+        
+        status = None
+        if data.get("status"):
+            try:
+                status = StageStatus(data["status"])
+            except ValueError:
+                pass
+        
+        return cls(
+            stage=stage,
+            plugin=data.get("plugin"),
+            status=status,
+            search_query=data.get("search_query", ""),
+            show_completed=data.get("show_completed", False),
+            show_failed=data.get("show_failed", True),
+            show_only_errors=data.get("show_only_errors", False),
+        )
 
 
 @dataclass
@@ -167,3 +292,192 @@ class VideoView:
             "is_complete": self.is_complete,
             "is_active": self.is_active,
         }
+
+
+
+class VideoSorter:
+    """Sorts video list by various criteria.
+    
+    This class provides flexible sorting options for video lists, supporting
+    multiple sort fields and ascending/descending order. It works with both
+    VideoView objects and VideoState objects from the state manager.
+    
+    Attributes:
+        field: Current sort field (default: DATE_ADDED)
+        order: Current sort order (default: DESCENDING)
+    
+    Example:
+        >>> sorter = VideoSorter()
+        >>> sorted_videos = sorter.sort(videos)
+        >>> sorter.set_sort(SortField.TITLE, SortOrder.ASCENDING)
+        >>> sorted_videos = sorter.sort(videos)
+    """
+    
+    def __init__(self):
+        """Initialize the video sorter with default settings."""
+        self.field = SortField.DATE_ADDED
+        self.order = SortOrder.DESCENDING
+    
+    def sort(self, videos: List[Any]) -> List[Any]:
+        """Sort videos by current field and order.
+        
+        Args:
+            videos: List of videos to sort (VideoView or VideoState objects)
+            
+        Returns:
+            Sorted list of videos
+        """
+        reverse = self.order == SortOrder.DESCENDING
+        
+        if self.field == SortField.DATE_ADDED:
+            return sorted(videos, key=lambda v: self._get_date_added(v), reverse=reverse)
+        elif self.field == SortField.TITLE:
+            return sorted(videos, key=lambda v: self._get_title(v).lower(), reverse=reverse)
+        elif self.field == SortField.PROGRESS:
+            return sorted(videos, key=lambda v: self._get_progress(v), reverse=reverse)
+        elif self.field == SortField.SPEED:
+            return sorted(videos, key=lambda v: self._get_speed(v), reverse=reverse)
+        elif self.field == SortField.SIZE:
+            return sorted(videos, key=lambda v: self._get_size(v), reverse=reverse)
+        elif self.field == SortField.STAGE:
+            return sorted(videos, key=lambda v: self._get_stage(v), reverse=reverse)
+        
+        return videos
+    
+    def _get_date_added(self, video: Any) -> datetime:
+        """Get the date added for sorting.
+        
+        Handles both VideoView (added_at) and VideoState (created_at).
+        """
+        if hasattr(video, 'added_at') and video.added_at is not None:
+            return video.added_at
+        elif hasattr(video, 'created_at') and video.created_at is not None:
+            return video.created_at
+        return datetime.min
+    
+    def _get_title(self, video: Any) -> str:
+        """Get the title for sorting."""
+        if hasattr(video, 'title'):
+            return video.title or ""
+        return ""
+    
+    def _get_progress(self, video: Any) -> float:
+        """Get the progress for sorting.
+        
+        Handles both VideoView (stage_progress) and VideoState (current_progress).
+        """
+        if hasattr(video, 'stage_progress'):
+            return video.stage_progress
+        elif hasattr(video, 'current_progress'):
+            return video.current_progress
+        return 0.0
+    
+    def _get_speed(self, video: Any) -> int:
+        """Get the speed for sorting.
+        
+        Handles both VideoView (stage_speed) and VideoState (current_speed).
+        """
+        if hasattr(video, 'stage_speed'):
+            return video.stage_speed
+        elif hasattr(video, 'current_speed'):
+            return int(video.current_speed)
+        return 0
+    
+    def _get_size(self, video: Any) -> int:
+        """Get the file size for sorting."""
+        if hasattr(video, 'file_size'):
+            return video.file_size
+        return 0
+    
+    def _get_stage(self, video: Any) -> str:
+        """Get the stage for sorting.
+        
+        Handles both VideoView (current_stage as enum or string) and 
+        VideoState (current_stage as string).
+        """
+        if hasattr(video, 'current_stage'):
+            stage = video.current_stage
+            if isinstance(stage, Enum):
+                return stage.value
+            return str(stage)
+        return ""
+    
+    def set_sort(self, field: SortField, order: Optional[SortOrder] = None) -> None:
+        """Set sort field and optionally order.
+        
+        Args:
+            field: The field to sort by
+            order: Optional sort order (if None, keeps current order)
+        """
+        self.field = field
+        if order is not None:
+            self.order = order
+    
+    def toggle_order(self) -> SortOrder:
+        """Toggle between ascending/descending.
+        
+        Returns:
+            The new sort order after toggling
+        """
+        if self.order == SortOrder.ASCENDING:
+            self.order = SortOrder.DESCENDING
+        else:
+            self.order = SortOrder.ASCENDING
+        return self.order
+    
+    def get_sort_description(self) -> str:
+        """Get a human-readable description of the current sort.
+        
+        Returns:
+            String describing the current sort field and order
+        """
+        field_descriptions = {
+            SortField.DATE_ADDED: "Date added",
+            SortField.TITLE: "Title",
+            SortField.PROGRESS: "Progress",
+            SortField.SPEED: "Speed",
+            SortField.SIZE: "Size",
+            SortField.STAGE: "Stage",
+        }
+        
+        field_name = field_descriptions.get(self.field, self.field.value)
+        order_symbol = "↓" if self.order == SortOrder.DESCENDING else "↑"
+        
+        return f"{field_name} {order_symbol}"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert sort state to dictionary.
+        
+        Returns:
+            Dictionary representation of sort state
+        """
+        return {
+            "field": self.field.value,
+            "order": self.order.value,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "VideoSorter":
+        """Create VideoSorter from dictionary.
+        
+        Args:
+            data: Dictionary containing sort values
+            
+        Returns:
+            New VideoSorter instance with restored state
+        """
+        sorter = cls()
+        
+        if "field" in data:
+            try:
+                sorter.field = SortField(data["field"])
+            except ValueError:
+                pass
+        
+        if "order" in data:
+            try:
+                sorter.order = SortOrder(data["order"])
+            except ValueError:
+                pass
+        
+        return sorter

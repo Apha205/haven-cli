@@ -319,11 +319,9 @@ class LitWrapperImpl implements LitWrapper {
         fileBuffer as ArrayBuffer,
         privateKey,
         chain,
-        (percent, message, bytesProcessed, totalBytes) => {
+        (message) => {
           // Log to stderr for debugging
-          console.error(`[lit-wrapper] ${percent.toFixed(1)}% - ${message}`);
-          // Forward to progress callback if provided
-          onProgress?.(percent, message, bytesProcessed, totalBytes);
+          console.error(`[lit-wrapper] ${message}`);
         },
         this._network
       );
@@ -392,11 +390,9 @@ class LitWrapperImpl implements LitWrapper {
         encryptedData,
         metadata,
         privateKey,
-        (percent, message, bytesProcessed, totalBytes) => {
+        (message) => {
           // Log to stderr for debugging
-          console.error(`[lit-wrapper] ${percent.toFixed(1)}% - ${message}`);
-          // Forward to progress callback if provided
-          onProgress?.(percent, message, bytesProcessed, totalBytes);
+          console.error(`[lit-wrapper] ${message}`);
         },
         this._network
       );

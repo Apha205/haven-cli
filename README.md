@@ -38,7 +38,16 @@ haven upload video.mp4
 haven run
 ```
 
+### Launch TUI (Optional)
+
+```bash
+# Start the Terminal User Interface for real-time monitoring
+haven-tui
+```
+
 ## Documentation
+
+### Haven CLI
 
 - [User Guide](docs/user-guide.md) - Comprehensive guide to using Haven CLI
 - [Configuration](docs/configuration.md) - Configuration options and environment variables
@@ -46,6 +55,14 @@ haven run
 - [API Reference](docs/api.md) - Python API documentation
 - [CLI Reference](docs/cli-reference.md) - Command-line reference
 - [Troubleshooting](docs/troubleshooting.md) - Common issues and solutions
+
+### Haven TUI
+
+- [TUI User Guide](docs/tui-user-guide.md) - Complete guide to the Terminal User Interface
+- [Keyboard Shortcuts](docs/keyboard-shortcuts.md) - Reference for all keyboard shortcuts
+- [TUI Architecture](docs/tui-architecture.md) - Technical architecture documentation
+- [TUI Troubleshooting](docs/tui-troubleshooting.md) - TUI-specific troubleshooting
+- [TUI FAQ](docs/tui-faq.md) - Frequently asked questions about the TUI
 
 ## Requirements
 

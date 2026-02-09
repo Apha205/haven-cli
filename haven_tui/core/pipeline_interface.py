@@ -98,6 +98,322 @@ class RetryResult:
     new_job_id: Optional[int] = None
 
 
+@dataclass
+class BatchResult:
+    """Result of batch operation on multiple videos.
+    
+    Attributes:
+        success: List of video IDs that were successfully processed
+        failed: List of (video_id, error_message) tuples for failed operations
+    """
+    success: List[int] = None
+    failed: List[tuple] = None
+    
+    def __post_init__(self):
+        """Initialize default empty lists."""
+        if self.success is None:
+            self.success = []
+        if self.failed is None:
+            self.failed = []
+    
+    @property
+    def all_succeeded(self) -> bool:
+        """Check if all operations succeeded."""
+        return len(self.failed) == 0
+    
+    @property
+    def total_count(self) -> int:
+        """Get total number of videos processed."""
+        return len(self.success) + len(self.failed)
+    
+    @property
+    def success_count(self) -> int:
+        """Get number of successful operations."""
+        return len(self.success)
+    
+    @property
+    def failed_count(self) -> int:
+        """Get number of failed operations."""
+        return len(self.failed)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert batch result to dictionary."""
+        return {
+            "success": self.success,
+            "failed": [{"video_id": vid, "error": err} for vid, err in self.failed],
+            "all_succeeded": self.all_succeeded,
+            "total_count": self.total_count,
+            "success_count": self.success_count,
+            "failed_count": self.failed_count,
+        }
+
+
+class BatchOperations:
+    """Handles multi-select and batch operations on videos.
+    
+    This class provides batch operations for video processing, allowing
+    users to perform actions on multiple videos at once, similar to
+    aria2tui's multi-select functionality.
+    
+    Example:
+        >>> batch_ops = BatchOperations(state_manager, pipeline_interface)
+        >>> batch_ops.select_all(videos)
+        >>> result = await batch_ops.retry_failed()
+        >>> print(f"Retried: {result.success_count} videos")
+    
+    Attributes:
+        state_manager: The StateManager for accessing video state
+        pipeline: The PipelineInterface for performing operations
+        selected: Set of selected video IDs
+    """
+    
+    def __init__(self, state_manager, pipeline):
+        """Initialize batch operations handler.
+        
+        Args:
+            state_manager: The StateManager for accessing video state
+            pipeline: The PipelineInterface for performing operations
+        """
+        self.state_manager = state_manager
+        self.pipeline = pipeline
+        self.selected: set[int] = set()
+    
+    def toggle_selection(self, video_id: int) -> bool:
+        """Toggle video selection.
+        
+        Args:
+            video_id: The video ID to toggle
+            
+        Returns:
+            True if video is now selected, False if unselected
+        """
+        if video_id in self.selected:
+            self.selected.remove(video_id)
+            return False
+        else:
+            self.selected.add(video_id)
+            return True
+    
+    def select_all(self, videos: Optional[List[Any]] = None) -> int:
+        """Select all visible videos.
+        
+        Args:
+            videos: Optional list of videos to select. If not provided,
+                   uses all videos from the state manager.
+                   
+        Returns:
+            Number of videos selected
+        """
+        if videos is None:
+            videos = self.state_manager.get_all_videos()
+        
+        self.selected = {v.id for v in videos}
+        return len(self.selected)
+    
+    def clear_selection(self) -> None:
+        """Clear all selections."""
+        self.selected.clear()
+    
+    def get_selected(self) -> List[int]:
+        """Get list of selected video IDs.
+        
+        Returns:
+            List of selected video IDs
+        """
+        return list(self.selected)
+    
+    def is_selected(self, video_id: int) -> bool:
+        """Check if a video is selected.
+        
+        Args:
+            video_id: The video ID to check
+            
+        Returns:
+            True if video is selected, False otherwise
+        """
+        return video_id in self.selected
+    
+    def get_selected_count(self) -> int:
+        """Get the number of selected videos.
+        
+        Returns:
+            Number of selected videos
+        """
+        return len(self.selected)
+    
+    def has_selection(self) -> bool:
+        """Check if any videos are selected.
+        
+        Returns:
+            True if at least one video is selected
+        """
+        return len(self.selected) > 0
+    
+    async def retry_failed(self) -> BatchResult:
+        """Retry failed stages for selected videos.
+        
+        This operation retries only videos that have failed status.
+        Videos that are not in failed state are skipped.
+        
+        Returns:
+            BatchResult with success and failure information
+        """
+        result = BatchResult()
+        
+        for video_id in self.selected:
+            video = self.state_manager.get_video(video_id)
+            if video and video.has_failed:
+                try:
+                    retry_result = await self.pipeline.retry_video(video_id)
+                    if retry_result.success:
+                        result.success.append(video_id)
+                    else:
+                        result.failed.append((video_id, retry_result.message))
+                except Exception as e:
+                    result.failed.append((video_id, str(e)))
+            else:
+                # Skip videos that aren't failed
+                if video:
+                    result.failed.append((video_id, "Video is not in failed state"))
+                else:
+                    result.failed.append((video_id, "Video not found"))
+        
+        return result
+    
+    async def remove_from_queue(self) -> BatchResult:
+        """Remove selected videos from pipeline.
+        
+        This cancels all active operations for the selected videos
+        and marks them as removed from the queue.
+        
+        Returns:
+            BatchResult with success and failure information
+        """
+        result = BatchResult()
+        
+        for video_id in self.selected:
+            try:
+                success = await self.pipeline.cancel_video(video_id)
+                if success:
+                    result.success.append(video_id)
+                else:
+                    result.failed.append((video_id, "Video not found or already cancelled"))
+            except Exception as e:
+                result.failed.append((video_id, str(e)))
+        
+        # Clear selection after removal
+        self.selected.clear()
+        return result
+    
+    async def force_reprocess(self, stage: Optional[str] = None) -> BatchResult:
+        """Force re-process selected videos from given stage.
+        
+        This operation forces all selected videos to be reprocessed
+        from the specified stage, regardless of their current status.
+        
+        Args:
+            stage: Stage to reprocess from (e.g., "download", "encrypt", "upload").
+                  If None, uses the current stage or starts from beginning.
+                  
+        Returns:
+            BatchResult with success and failure information
+        """
+        result = BatchResult()
+        
+        valid_stages = ["download", "encrypt", "upload", "sync", "analysis", "ingest"]
+        if stage is not None and stage not in valid_stages:
+            result.failed.append((0, f"Invalid stage: {stage}. Must be one of {valid_stages}"))
+            return result
+        
+        for video_id in self.selected:
+            try:
+                # Determine which stage to retry from
+                retry_stage = stage
+                if retry_stage is None:
+                    video = self.state_manager.get_video(video_id)
+                    if video:
+                        retry_stage = video.current_stage
+                    else:
+                        retry_stage = "download"
+                
+                retry_result = await self.pipeline.retry_video(video_id, stage=retry_stage)
+                if retry_result.success:
+                    result.success.append(video_id)
+                else:
+                    result.failed.append((video_id, retry_result.message))
+            except Exception as e:
+                result.failed.append((video_id, str(e)))
+        
+        return result
+    
+    def export_list(self, filepath: str, videos: Optional[List[Any]] = None) -> Dict[str, Any]:
+        """Export selected videos to JSON file.
+        
+        Args:
+            filepath: Path to the output JSON file
+            videos: Optional list of video objects with additional metadata.
+                   If not provided, uses state manager to get video info.
+                   
+        Returns:
+            Dictionary with export results
+        """
+        import json
+        
+        export_data = []
+        
+        for video_id in self.selected:
+            video = self.state_manager.get_video(video_id)
+            if video:
+                data = {
+                    "id": video.id,
+                    "title": video.title,
+                    "stage": video.current_stage,
+                    "progress": video.current_progress,
+                    "status": video.overall_status,
+                    "is_active": video.is_active,
+                    "has_failed": video.has_failed,
+                    "is_completed": video.is_completed,
+                }
+                export_data.append(data)
+        
+        result = {
+            "exported_count": len(export_data),
+            "filepath": filepath,
+            "videos": export_data,
+        }
+        
+        try:
+            with open(filepath, 'w') as f:
+                json.dump(result, f, indent=2, default=str)
+            result["success"] = True
+        except Exception as e:
+            result["success"] = False
+            result["error"] = str(e)
+        
+        return result
+    
+    def get_selected_videos_info(self) -> List[Dict[str, Any]]:
+        """Get detailed information about selected videos.
+        
+        Returns:
+            List of dictionaries with video information
+        """
+        info = []
+        
+        for video_id in self.selected:
+            video = self.state_manager.get_video(video_id)
+            if video:
+                info.append({
+                    "id": video.id,
+                    "title": video.title,
+                    "stage": video.current_stage,
+                    "progress": video.current_progress,
+                    "status": video.overall_status,
+                })
+        
+        return info
+
+
 class PipelineInterface:
     """Primary interface between TUI and Haven pipeline core.
     

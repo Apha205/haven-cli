@@ -744,3 +744,400 @@ class SpeedHistoryRepository:
         ).delete()
         self.session.commit()
         return result
+
+
+class AnalyticsRepository:
+    """Repository for analytics queries and pipeline performance metrics.
+    
+    Provides aggregated statistics about pipeline performance including:
+    - Videos processed per day/week
+    - Average time per stage
+    - Success/failure rates
+    - Plugin usage distribution
+    - Throughput trends
+    """
+
+    def __init__(self, session: Session):
+        """Initialize repository with database session.
+
+        Args:
+            session: SQLAlchemy session
+        """
+        self.session = session
+
+    def get_videos_per_day(self, days: int = 7) -> Dict[str, int]:
+        """Get count of videos processed per day.
+        
+        Args:
+            days: Number of days to look back (default 7)
+            
+        Returns:
+            Dictionary mapping date strings (YYYY-MM-DD) to video counts
+        """
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        
+        results = self.session.query(
+            func.date(Video.created_at).label('date'),
+            func.count().label('count')
+        ).filter(
+            Video.created_at >= since
+        ).group_by(
+            func.date(Video.created_at)
+        ).all()
+        
+        # Build complete date range with 0 for missing days
+        from collections import OrderedDict
+        daily_counts = OrderedDict()
+        
+        # Initialize all days with 0
+        for i in range(days):
+            date_key = (datetime.now(timezone.utc) - timedelta(days=i)).strftime('%Y-%m-%d')
+            daily_counts[date_key] = 0
+        
+        # Fill in actual counts
+        for r in results:
+            date_key = str(r.date) if r.date else None
+            if date_key and date_key in daily_counts:
+                daily_counts[date_key] = r.count
+        
+        # Return in reverse chronological order (newest first)
+        return dict(reversed(list(daily_counts.items())))
+
+    def get_avg_time_per_stage(self, days: int = 30) -> Dict[str, float]:
+        """Get average time spent in each stage.
+        
+        Args:
+            days: Number of days to look back for completed jobs (default 30)
+            
+        Returns:
+            Dictionary mapping stage names to average time in seconds
+        """
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        stages = {}
+        
+        # Download stage
+        dl_result = self.session.query(
+            func.avg(
+                func.julianday(Download.completed_at) - func.julianday(Download.started_at)
+            ).label('avg_days')
+        ).filter(
+            Download.status == "completed",
+            Download.completed_at != None,
+            Download.started_at != None,
+            Download.completed_at >= since
+        ).first()
+        
+        # Convert from fractional days to seconds
+        dl_avg = dl_result.avg_days if dl_result and dl_result.avg_days else 0
+        stages["download"] = dl_avg * 86400 if dl_avg else 0
+        
+        # Encrypt stage
+        enc_result = self.session.query(
+            func.avg(
+                func.julianday(EncryptionJob.completed_at) - func.julianday(EncryptionJob.started_at)
+            ).label('avg_days')
+        ).filter(
+            EncryptionJob.status == "completed",
+            EncryptionJob.completed_at != None,
+            EncryptionJob.started_at != None,
+            EncryptionJob.completed_at >= since
+        ).first()
+        
+        enc_avg = enc_result.avg_days if enc_result and enc_result.avg_days else 0
+        stages["encrypt"] = enc_avg * 86400 if enc_avg else 0
+        
+        # Upload stage
+        up_result = self.session.query(
+            func.avg(
+                func.julianday(UploadJob.completed_at) - func.julianday(UploadJob.started_at)
+            ).label('avg_days')
+        ).filter(
+            UploadJob.status == "completed",
+            UploadJob.completed_at != None,
+            UploadJob.started_at != None,
+            UploadJob.completed_at >= since
+        ).first()
+        
+        up_avg = up_result.avg_days if up_result and up_result.avg_days else 0
+        stages["upload"] = up_avg * 86400 if up_avg else 0
+        
+        # Analysis stage
+        analysis_result = self.session.query(
+            func.avg(
+                func.julianday(AnalysisJob.completed_at) - func.julianday(AnalysisJob.started_at)
+            ).label('avg_days')
+        ).filter(
+            AnalysisJob.status == "completed",
+            AnalysisJob.completed_at != None,
+            AnalysisJob.started_at != None,
+            AnalysisJob.completed_at >= since
+        ).first()
+        
+        analysis_avg = analysis_result.avg_days if analysis_result and analysis_result.avg_days else 0
+        stages["analyze"] = analysis_avg * 86400 if analysis_avg else 0
+        
+        # Sync stage
+        sync_result = self.session.query(
+            func.avg(
+                func.julianday(SyncJob.completed_at) - func.julianday(SyncJob.started_at)
+            ).label('avg_days')
+        ).filter(
+            SyncJob.status == "completed",
+            SyncJob.completed_at != None,
+            SyncJob.started_at != None,
+            SyncJob.completed_at >= since
+        ).first()
+        
+        sync_avg = sync_result.avg_days if sync_result and sync_result.avg_days else 0
+        stages["sync"] = sync_avg * 86400 if sync_avg else 0
+        
+        return stages
+
+    def get_success_rates(self, days: int = 30) -> Dict[str, Dict[str, float]]:
+        """Get success/failure rates by stage.
+        
+        Args:
+            days: Number of days to look back (default 30)
+            
+        Returns:
+            Dictionary mapping stage names to dict with 'success_rate' and 'total'
+        """
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        results = {}
+        
+        # Define stages with their (model, name) tuples
+        stages = [
+            (Download, "download"),
+            (EncryptionJob, "encrypt"),
+            (UploadJob, "upload"),
+            (AnalysisJob, "analyze"),
+            (SyncJob, "sync"),
+        ]
+        
+        for model, name in stages:
+            # Total count with created_at filter
+            total_query = self.session.query(func.count()).filter(
+                model.created_at >= since
+            )
+            total = total_query.scalar() or 0
+            
+            # Success count (completed status)
+            success_query = self.session.query(func.count()).filter(
+                model.status == "completed",
+                model.created_at >= since
+            )
+            success = success_query.scalar() or 0
+            
+            # Failed count
+            failed_query = self.session.query(func.count()).filter(
+                model.status.in_(["failed", "error"]),
+                model.created_at >= since
+            )
+            failed = failed_query.scalar() or 0
+            
+            if total > 0:
+                success_rate = (success / total) * 100
+                failure_rate = (failed / total) * 100
+            else:
+                success_rate = 0.0
+                failure_rate = 0.0
+            
+            results[name] = {
+                "success_rate": success_rate,
+                "failure_rate": failure_rate,
+                "success": success,
+                "failed": failed,
+                "total": total,
+            }
+        
+        return results
+
+    def get_plugin_usage_distribution(self, days: int = 30) -> Dict[str, int]:
+        """Get plugin usage distribution (count of videos by plugin).
+        
+        Args:
+            days: Number of days to look back (default 30)
+            
+        Returns:
+            Dictionary mapping plugin names to video counts
+        """
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        
+        results = self.session.query(
+            Video.plugin_name.label('plugin'),
+            func.count().label('count')
+        ).filter(
+            Video.created_at >= since
+        ).group_by(
+            Video.plugin_name
+        ).all()
+        
+        distribution = {}
+        for r in results:
+            plugin = r.plugin or "unknown"
+            distribution[plugin] = r.count
+        
+        return distribution
+
+    def get_plugin_usage_percentages(self, days: int = 30) -> Dict[str, float]:
+        """Get plugin usage as percentages.
+        
+        Args:
+            days: Number of days to look back (default 30)
+            
+        Returns:
+            Dictionary mapping plugin names to percentage (0-100)
+        """
+        distribution = self.get_plugin_usage_distribution(days)
+        
+        total = sum(distribution.values())
+        if total == 0:
+            return {}
+        
+        return {
+            plugin: (count / total) * 100
+            for plugin, count in distribution.items()
+        }
+
+    def get_throughput_trends(self, days: int = 7) -> Dict[str, List[Dict[str, Any]]]:
+        """Get throughput trends over time.
+        
+        Args:
+            days: Number of days to look back (default 7)
+            
+        Returns:
+            Dictionary mapping stage names to list of daily throughput data
+        """
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        
+        trends = {
+            "download": [],
+            "encrypt": [],
+            "upload": [],
+            "analyze": [],
+            "sync": [],
+        }
+        
+        # Download throughput by day
+        dl_results = self.session.query(
+            func.date(Download.completed_at).label('date'),
+            func.sum(Download.bytes_downloaded).label('bytes'),
+            func.count().label('count')
+        ).filter(
+            Download.status == "completed",
+            Download.completed_at != None,
+            Download.completed_at >= since
+        ).group_by(
+            func.date(Download.completed_at)
+        ).all()
+        
+        for r in dl_results:
+            trends["download"].append({
+                "date": str(r.date) if r.date else None,
+                "bytes": r.bytes or 0,
+                "count": r.count,
+            })
+        
+        # Upload throughput by day
+        up_results = self.session.query(
+            func.date(UploadJob.completed_at).label('date'),
+            func.sum(UploadJob.bytes_uploaded).label('bytes'),
+            func.count().label('count')
+        ).filter(
+            UploadJob.status == "completed",
+            UploadJob.completed_at != None,
+            UploadJob.completed_at >= since
+        ).group_by(
+            func.date(UploadJob.completed_at)
+        ).all()
+        
+        for r in up_results:
+            trends["upload"].append({
+                "date": str(r.date) if r.date else None,
+                "bytes": r.bytes or 0,
+                "count": r.count,
+            })
+        
+        # Encrypt throughput by day (bytes processed)
+        enc_results = self.session.query(
+            func.date(EncryptionJob.completed_at).label('date'),
+            func.sum(EncryptionJob.bytes_processed).label('bytes'),
+            func.count().label('count')
+        ).filter(
+            EncryptionJob.status == "completed",
+            EncryptionJob.completed_at != None,
+            EncryptionJob.completed_at >= since
+        ).group_by(
+            func.date(EncryptionJob.completed_at)
+        ).all()
+        
+        for r in enc_results:
+            trends["encrypt"].append({
+                "date": str(r.date) if r.date else None,
+                "bytes": r.bytes or 0,
+                "count": r.count,
+            })
+        
+        return trends
+
+    def get_pipeline_summary(self) -> Dict[str, Any]:
+        """Get overall pipeline summary statistics.
+        
+        Returns:
+            Dictionary with comprehensive pipeline statistics
+        """
+        # Total videos
+        total_videos = self.session.query(func.count(Video.id)).scalar() or 0
+        
+        # Videos by status (based on pipeline snapshot)
+        active_count = self.session.query(func.count(PipelineSnapshot.id)).filter(
+            PipelineSnapshot.overall_status == "active"
+        ).scalar() or 0
+        
+        completed_count = self.session.query(func.count(PipelineSnapshot.id)).filter(
+            PipelineSnapshot.overall_status == "completed"
+        ).scalar() or 0
+        
+        failed_count = self.session.query(func.count(PipelineSnapshot.id)).filter(
+            PipelineSnapshot.overall_status == "failed"
+        ).scalar() or 0
+        
+        pending_count = self.session.query(func.count(PipelineSnapshot.id)).filter(
+            PipelineSnapshot.overall_status == "pending"
+        ).scalar() or 0
+        
+        # Total data processed
+        total_downloaded = self.session.query(
+            func.sum(Download.bytes_downloaded)
+        ).filter(
+            Download.status == "completed"
+        ).scalar() or 0
+        
+        total_uploaded = self.session.query(
+            func.sum(UploadJob.bytes_uploaded)
+        ).filter(
+            UploadJob.status == "completed"
+        ).scalar() or 0
+        
+        total_encrypted = self.session.query(
+            func.sum(EncryptionJob.bytes_processed)
+        ).filter(
+            EncryptionJob.status == "completed"
+        ).scalar() or 0
+        
+        return {
+            "videos": {
+                "total": total_videos,
+                "active": active_count,
+                "completed": completed_count,
+                "failed": failed_count,
+                "pending": pending_count,
+            },
+            "data_processed": {
+                "downloaded_bytes": total_downloaded,
+                "uploaded_bytes": total_uploaded,
+                "encrypted_bytes": total_encrypted,
+            },
+            "success_rates_7d": self.get_success_rates(days=7),
+            "videos_per_day_7d": self.get_videos_per_day(days=7),
+        }

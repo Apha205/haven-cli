@@ -114,3 +114,169 @@ export type EncryptionProgressCallback = (
 
 /** Message-based progress callback */
 export type MessageProgressCallback = (message: string) => void;
+
+// ============================================================================
+// Streaming Types
+// ============================================================================
+
+/**
+ * Callback for reporting progress of streaming operations
+ */
+export type StreamProgressCallback = (progress: {
+  /** Total bytes processed so far */
+  bytesProcessed: number;
+  /** Total bytes if known, undefined for indeterminate streams */
+  totalBytes?: number;
+  /** Percentage complete (0-100), undefined if total unknown */
+  percent?: number;
+  /** Current chunk index being processed */
+  chunkIndex?: number;
+  /** Total number of chunks if known */
+  totalChunks?: number;
+}) => void;
+
+/**
+ * Options for file-based streaming operations
+ */
+export interface FileStreamOptions {
+  /** Size of chunks to read/write in bytes (default: 1MB) */
+  chunkSize?: number;
+
+  /** Callback for progress updates */
+  onProgress?: StreamProgressCallback;
+
+  /** Callback when each chunk is processed (for fine-grained tracking) */
+  onChunkProcessed?: (chunkIndex: number, chunkSize: number) => void;
+
+  /** Signal for cancellation */
+  signal?: AbortSignal;
+}
+
+/**
+ * Result of a streaming encryption operation
+ */
+export interface StreamingEncryptionResult {
+  /** Path to the encrypted file */
+  encryptedPath: string;
+
+  /** Path to the metadata file */
+  metadataPath: string;
+
+  /** SHA-256 hash of the original file (hex string) */
+  originalHash: string;
+
+  /** Size of the encrypted file in bytes */
+  encryptedSize: number;
+
+  /** Number of chunks the file was split into */
+  chunkCount: number;
+
+  /** Size of the original file in bytes */
+  originalSize: number;
+}
+
+/**
+ * Result of a streaming decryption operation
+ */
+export interface StreamingDecryptionResult {
+  /** Path to the decrypted file */
+  decryptedPath: string;
+
+  /** SHA-256 hash from metadata (expected) */
+  originalHash: string;
+
+  /** SHA-256 hash of the decrypted file (computed) */
+  computedHash: string;
+
+  /** Whether the computed hash matches the original */
+  hashValid: boolean;
+
+  /** Size of the original file from metadata */
+  originalSize: number;
+
+  /** Size of the decrypted file */
+  decryptedSize: number;
+}
+
+/**
+ * Information about a chunk in a streaming operation
+ */
+export interface ChunkInfo {
+  /** Index of the chunk (0-based) */
+  index: number;
+
+  /** Size of the original (unencrypted) data */
+  originalSize: number;
+
+  /** Size of the encrypted data (includes auth tag) */
+  encryptedSize: number;
+
+  /** IV used for this chunk (derived from main IV) */
+  iv: Uint8Array;
+}
+
+/**
+ * Header for streaming encrypted format
+ */
+export interface StreamHeader {
+  /** Total number of chunks (0 for unknown/indeterminate) */
+  totalChunks: number;
+
+  /** 12-byte initialization vector */
+  iv: Uint8Array;
+}
+
+/**
+ * Options for AES encryption streams
+ */
+export interface EncryptionStreamOptions {
+  /** Encryption key (32 bytes for AES-256) */
+  key: Uint8Array;
+
+  /** Initialization vector (12 bytes for GCM) */
+  iv?: Uint8Array;
+
+  /** Total size of data if known (for progress calculation) */
+  totalSize?: number;
+
+  /** Chunk size for internal processing */
+  chunkSize?: number;
+
+  /** Progress callback */
+  onProgress?: StreamProgressCallback;
+}
+
+/**
+ * Options for AES decryption streams
+ */
+export interface DecryptionStreamOptions {
+  /** Decryption key (32 bytes for AES-256) */
+  key: Uint8Array;
+
+  /** Expected number of chunks for validation */
+  expectedChunks?: number;
+
+  /** Expected hash for verification */
+  expectedHash?: string;
+
+  /** Progress callback */
+  onProgress?: StreamProgressCallback;
+}
+
+/** Encrypted chunk with header for streaming output */
+export interface EncryptedChunk {
+  /** Chunk index (4 bytes, big-endian) */
+  chunkIndex: number;
+  /** Encrypted data including auth tag */
+  data: Uint8Array;
+}
+
+/** Decrypted chunk with metadata */
+export interface DecryptedChunk {
+  /** Chunk index */
+  chunkIndex: number;
+  /** Decrypted data */
+  data: Uint8Array;
+  /** Whether this is the last chunk */
+  isLast: boolean;
+}

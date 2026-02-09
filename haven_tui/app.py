@@ -166,15 +166,22 @@ class HavenTUIApp(App[None]):
     
     async def _initialize_components(self) -> None:
         """Initialize all application components."""
-        # Initialize state manager
+        # Get database URL from config
         db_url = self.config.database.connection_string
-        self.state_manager = StateManager(db_url=db_url)
         
-        # Initialize pipeline interface
+        # Initialize pipeline interface with database path
+        # The PipelineInterface needs a database path to connect to the Haven database
         self.pipeline_interface = PipelineInterface(
-            base_url=self.config.advanced.api_base_url,
-            api_key=self.config.advanced.api_key,
+            database_path=db_url.replace("sqlite:///", ""),
         )
+        
+        # Enter the async context to initialize the database session
+        await self.pipeline_interface.__aenter__()
+        
+        # Initialize state manager with pipeline interface
+        # StateManager uses pipeline_interface as its data source
+        self.state_manager = StateManager(pipeline=self.pipeline_interface)
+        await self.state_manager.initialize()
         
         # Initialize speed history repository
         self.speed_history_repo = SpeedHistoryRepository(
@@ -270,9 +277,13 @@ class HavenTUIApp(App[None]):
         if self.event_consumer:
             await self.event_consumer.stop()
         
-        # Close database connections
+        # Shutdown state manager
         if self.state_manager:
-            await self.state_manager.close()
+            await self.state_manager.shutdown()
+        
+        # Exit pipeline interface context
+        if self.pipeline_interface:
+            await self.pipeline_interface.__aexit__(None, None, None)
 
 
 def main(args: Optional[list[str]] = None) -> int:

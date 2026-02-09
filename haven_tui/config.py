@@ -63,6 +63,15 @@ class DatabaseConfig:
             self.path = Path(self.path).expanduser()
         else:
             self.path = self.path.expanduser()
+    
+    @property
+    def connection_string(self) -> str:
+        """Get the SQLite connection string.
+        
+        Returns:
+            SQLite connection string in format: sqlite:////<path>
+        """
+        return f"sqlite:///{self.path}"
 
 
 @dataclass

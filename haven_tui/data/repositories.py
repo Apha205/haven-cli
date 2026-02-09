@@ -36,17 +36,17 @@ class PipelineSnapshotRepository:
         self.session = session
 
     def get_active_videos(self, limit: int = 1000, offset: int = 0) -> List[VideoView]:
-        """Get videos currently in pipeline (not completed/failed).
+        """Get videos currently in pipeline (not completed).
 
         Args:
             limit: Maximum number of results
             offset: Number of results to skip
 
         Returns:
-            List of VideoView objects for active videos
+            List of VideoView objects for active videos (including failed)
         """
         query = self.session.query(PipelineSnapshot).filter(
-            PipelineSnapshot.overall_status.in_(["active", "pending"])
+            PipelineSnapshot.overall_status.in_(["active", "pending", "failed"])
         ).order_by(
             desc(PipelineSnapshot.stage_started_at)
         )
@@ -579,13 +579,30 @@ class JobHistoryRepository:
 class SpeedHistoryRepository:
     """Repository for speed history queries (for graphing)."""
 
-    def __init__(self, session: Session):
-        """Initialize repository with database session.
+    def __init__(
+        self,
+        session: Optional[Session] = None,
+        db_url: Optional[str] = None,
+        max_history_seconds: int = 300,
+    ):
+        """Initialize repository with database session or URL.
 
         Args:
-            session: SQLAlchemy session
+            session: SQLAlchemy session (optional if db_url provided)
+            db_url: Database URL string (optional if session provided)
+            max_history_seconds: Maximum history to keep in seconds (default 300 = 5 min)
         """
-        self.session = session
+        if session is not None:
+            self.session = session
+        elif db_url is not None:
+            # Create session from db_url
+            from haven_cli.database.connection import get_db_session
+            self.session = get_db_session()
+            self._owns_session = True
+        else:
+            raise ValueError("Either session or db_url must be provided")
+        
+        self.max_history_seconds = max_history_seconds
 
     def get_speed_history(
         self,

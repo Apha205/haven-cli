@@ -668,14 +668,14 @@ class BitTorrentPlugin(ArchiverPlugin):
         
         try:
             # Add magnet link to session (in executor to avoid blocking)
-            params = {
-                'save_path': str(self._download_dir),
-                'storage_mode': lt.storage_mode_t.storage_mode_sparse,
-                'max_connections': self._bt_config.max_connections,
-            }
-            
             def _add_magnet():
-                return lt.add_magnet_uri(self._session, source.uri, params)
+                params = lt.add_torrent_params()
+                params.save_path = str(self._download_dir)
+                params.storage_mode = lt.storage_mode_t.storage_mode_sparse
+                params.url = source.uri
+                params.max_connections = self._bt_config.max_connections
+                handle = self._session.add_torrent(params)
+                return handle
             
             handle = await self._run_in_executor(
                 _add_magnet,
@@ -1302,21 +1302,21 @@ class BitTorrentPlugin(ArchiverPlugin):
                         continue
                     
                     # Add magnet to session with resume data
-                    params = {
-                        'save_path': str(self._download_dir),
-                        'storage_mode': lt.storage_mode_t.storage_mode_sparse,
-                        'max_connections': self._bt_config.max_connections,
-                    }
-                    
-                    if download.get("resume_data"):
-                        try:
-                            resume_data = base64.b64decode(download["resume_data"])
-                            params['resume_data'] = resume_data
-                        except Exception as e:
-                            logger.warning(f"Could not decode resume data for {infohash[:16]}...: {e}")
-                    
                     def _add_magnet():
-                        return lt.add_magnet_uri(self._session, magnet_uri, params)
+                        p = lt.add_torrent_params()
+                        p.save_path = str(self._download_dir)
+                        p.storage_mode = lt.storage_mode_t.storage_mode_sparse
+                        p.url = magnet_uri
+                        p.max_connections = self._bt_config.max_connections
+                        
+                        if download.get("resume_data"):
+                            try:
+                                resume_data = base64.b64decode(download["resume_data"])
+                                p.resume_data = resume_data
+                            except Exception as e:
+                                logger.warning(f"Could not decode resume data for {infohash[:16]}...: {e}")
+                        
+                        return self._session.add_torrent(p)
                     
                     handle = await self._run_in_executor(
                         _add_magnet,
@@ -1359,22 +1359,22 @@ class BitTorrentPlugin(ArchiverPlugin):
         
         try:
             # Add magnet link to session (in executor)
-            params = {
-                'save_path': str(self._download_dir),
-                'storage_mode': lt.storage_mode_t.storage_mode_sparse,
-                'max_connections': self._bt_config.max_connections,
-            }
-            
-            # Add resume data if available
-            if existing.get("resume_data"):
-                try:
-                    resume_data = base64.b64decode(existing["resume_data"])
-                    params['resume_data'] = resume_data
-                except Exception as e:
-                    logger.warning(f"Could not decode resume data: {e}")
-            
             def _add_magnet():
-                return lt.add_magnet_uri(self._session, source.uri, params)
+                p = lt.add_torrent_params()
+                p.save_path = str(self._download_dir)
+                p.storage_mode = lt.storage_mode_t.storage_mode_sparse
+                p.url = source.uri
+                p.max_connections = self._bt_config.max_connections
+                
+                # Add resume data if available
+                if existing.get("resume_data"):
+                    try:
+                        resume_data = base64.b64decode(existing["resume_data"])
+                        p.resume_data = resume_data
+                    except Exception as e:
+                        logger.warning(f"Could not decode resume data: {e}")
+                
+                return self._session.add_torrent(p)
             
             handle = await self._run_in_executor(
                 _add_magnet,

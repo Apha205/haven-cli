@@ -162,9 +162,10 @@ class VideoListWidget(DataTable):
         self.cursor_type = "row"
         self.show_cursor = True
         
-    def compose(self) -> None:
-        """Set up the table columns."""
+    def compose(self):
+        """Set up the table columns - DataTable handles its own composition."""
         self._setup_columns()
+        return []
         
     def _setup_columns(self) -> None:
         """Configure table columns based on config."""
@@ -685,9 +686,10 @@ class VideoListFooter(Static):
         self._batch_mode = batch_mode
         self._selection_count = selection_count
     
-    def compose(self) -> None:
-        """Set up the footer content."""
+    def compose(self):
+        """Set up the footer content - returns empty as content is set via update()."""
         self._update_content()
+        return []
     
     def set_show_graph(self, show_graph: bool) -> None:
         """Update the graph visibility indicator.
@@ -750,43 +752,6 @@ class VideoListScreen(Screen):
     DEFAULT_CSS = """
     VideoListScreen {
         layout: vertical;
-    }
-    
-    #video-list-container {
-        height: 100%;
-        width: 100%;
-    }
-    
-    #header-container {
-        height: auto;
-        dock: top;
-    }
-    
-    #footer-container {
-        height: auto;
-        dock: bottom;
-    }
-    
-    #main-content {
-        height: 1fr;
-        width: 100%;
-        layout: horizontal;
-    }
-    
-    #list-container {
-        height: 100%;
-        width: 1fr;
-    }
-    
-    #graph-container {
-        height: 100%;
-        width: 35;
-        dock: right;
-        display: none;
-    }
-    
-    #graph-container.visible {
-        display: block;
     }
     """
     
@@ -853,40 +818,27 @@ class VideoListScreen(Screen):
         if state_manager and pipeline_interface:
             self._batch_operations = BatchOperations(state_manager, pipeline_interface)
     
-    def compose(self) -> None:
+    def compose(self):
         """Compose the screen layout."""
-        with Container(id="video-list-container"):
-            with Container(id="header-container"):
-                yield VideoListHeader(self.state_manager)
-            
-            with Container(id="main-content"):
-                with Container(id="list-container"):
-                    yield VideoListWidget(
-                        state_manager=self.state_manager,
-                        config=self.config,
-                        on_select=self._on_video_select,
-                        on_multi_select=self._on_multi_select,
-                        batch_operations=self._batch_operations,
-                    )
-                
-                with Container(id="graph-container", classes="visible" if self.show_graph else ""):
-                    yield SpeedGraphComponent(
-                        speed_history_repo=self._speed_history_repo,
-                        width=30,
-                        height=15,
-                        history_seconds=self.config.display.graph_history_seconds if self.config else 60,
-                        id="speed-graph",
-                    )
-            
-            with Container(id="footer-container"):
-                yield VideoListFooter(
-                    show_graph=self.show_graph,
-                    batch_mode=self.batch_mode,
-                )
+        yield VideoListHeader(self.state_manager)
+        
+        yield VideoListWidget(
+            state_manager=self.state_manager,
+            config=self.config,
+            on_select=self._on_video_select,
+            on_multi_select=self._on_multi_select,
+            batch_operations=self._batch_operations,
+        )
+        
+        yield VideoListFooter(
+            show_graph=self.show_graph,
+            batch_mode=self.batch_mode,
+        )
     
     def on_mount(self) -> None:
         """Handle mount event - start auto-refresh timer."""
         self._start_refresh_timer()
+        self._refresh_data()  # Initial data load
         self._update_header()
     
     def on_unmount(self) -> None:

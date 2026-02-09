@@ -14,13 +14,14 @@ from typing import Optional, Any
 from textual.app import App, ComposeResult
 from textual.containers import Container
 from textual.widgets import Static
+from pathlib import Path
 
 # Import from haven_tui package
 from haven_tui.config import HavenTUIConfig, get_config, get_default_config_path
 from haven_tui.core.state_manager import StateManager
 from haven_tui.core.pipeline_interface import PipelineInterface
-from haven_tui.data.event_consumer import EventConsumer
-from haven_tui.data.refresher import Refresher
+from haven_tui.data.event_consumer import TUIEventConsumer as EventConsumer
+from haven_tui.data.refresher import DataRefresher as Refresher
 from haven_tui.data.repositories import SpeedHistoryRepository
 from haven_tui.ui.views.video_list import VideoListScreen
 from haven_tui.ui.views.video_detail import VideoDetailScreen
@@ -88,9 +89,8 @@ class HavenTUIApp(App[None]):
         ("?", "help", "Help"),
     ]
     
+    # Note: video_detail screen is created dynamically with video_id
     SCREENS = {
-        "video_list": VideoListScreen,
-        "video_detail": VideoDetailScreen,
         "analytics": AnalyticsDashboardScreen,
         "event_log": EventLogScreen,
     }
@@ -113,11 +113,11 @@ class HavenTUIApp(App[None]):
         if config:
             self.config = config
         elif config_path:
-            self.config = get_config(config_path)
+            self.config = HavenTUIConfig.load(Path(config_path))
         else:
             default_path = get_default_config_path()
             if default_path.exists():
-                self.config = get_config(str(default_path))
+                self.config = HavenTUIConfig.load(default_path)
             else:
                 self.config = HavenTUIConfig()
         
@@ -189,17 +189,13 @@ class HavenTUIApp(App[None]):
             max_history_seconds=self.config.display.graph_history_seconds,
         )
         
-        # Initialize event consumer
-        self.event_consumer = EventConsumer(
-            pipeline_interface=self.pipeline_interface,
-            state_manager=self.state_manager,
-        )
+        # Initialize event consumer - skip for now as it requires EventBus
+        # The StateManager already handles events directly from PipelineInterface
+        self.event_consumer = None
         
-        # Initialize refresher
-        self.refresher = Refresher(
-            state_manager=self.state_manager,
-            refresh_interval=self.config.display.refresh_rate,
-        )
+        # Initialize refresher - skip for now as it requires full setup
+        # The VideoListScreen has its own refresh mechanism
+        self.refresher = None
         
         # Start background tasks
         # Note: In a real implementation, these would be proper background tasks
@@ -221,10 +217,8 @@ class HavenTUIApp(App[None]):
         # Install the screen
         self.install_screen(video_list_screen, "video_list")
         
-        # Install other screens
-        self.install_screen(VideoDetailScreen(), "video_detail")
-        self.install_screen(AnalyticsDashboardScreen(), "analytics")
-        self.install_screen(EventLogScreen(), "event_log")
+        # Note: video_detail screen is created dynamically with video_id
+        # Other screens are defined in SCREENS class attribute
     
     def action_refresh(self) -> None:
         """Refresh the display."""
@@ -272,7 +266,7 @@ class HavenTUIApp(App[None]):
         """Handle application unmount - cleanup resources."""
         # Stop background tasks
         if self.refresher:
-            self.refresher.stop()
+            await self.refresher.stop()
         
         if self.event_consumer:
             await self.event_consumer.stop()

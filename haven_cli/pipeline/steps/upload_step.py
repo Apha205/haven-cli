@@ -437,10 +437,11 @@ class UploadStep(ConditionalStep):
         network_config = get_network_config(network_mode)
         
         try:
+            # Use longer timeout for Synapse connection (testnet can be slow)
             await self._js_call_with_retry("synapse.connect", {
                 "rpcUrl": network_config.filecoin_rpc_url,
                 "networkMode": network_mode,
-            })
+            }, timeout=120.0)  # 2 minutes for connection
         except Exception as e:
             logger.error(f"Failed to connect to Synapse: {e}")
             raise RuntimeError(f"Synapse connection failed: {e}") from e

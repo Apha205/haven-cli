@@ -278,9 +278,10 @@ class EncryptStep(ConditionalStep):
         logger.info(f"Connecting to Lit Protocol network: {lit_network} (mode: {network_mode})")
         
         try:
+            # Use longer timeout for Lit connection (testnet can be slow)
             await self._js_call_with_retry("lit.connect", {
                 "network": lit_network,
-            })
+            }, timeout=120.0)  # 2 minutes for connection
         except Exception as e:
             logger.error(f"Failed to connect to Lit Protocol: {e}")
             raise RuntimeError(f"Lit Protocol connection failed: {e}") from e
@@ -357,12 +358,17 @@ class EncryptStep(ConditionalStep):
             
             # Call encryptFile with progress tracking enabled
             # This uses hybrid encryption (AES-256-GCM + Lit Protocol)
+            # Calculate timeout based on file size: base 2 min + 1 min per 100MB
+            encrypt_timeout = 120.0 + (file_size / (100 * 1024 * 1024)) * 60.0
+            encrypt_timeout = min(encrypt_timeout, 600.0)  # Cap at 10 minutes
+            logger.debug(f"Encryption timeout: {encrypt_timeout:.0f}s for {file_size} bytes")
+            
             result = await self._js_call_with_retry("lit.encryptFile", {
                 "filePath": video_path,
                 "chain": chain,
                 "privateKey": private_key,
                 "onProgress": True,  # Request progress notifications
-            })
+            }, timeout=encrypt_timeout)
             
             # Extract result data
             encrypted_path = result.get("encryptedFilePath", "")

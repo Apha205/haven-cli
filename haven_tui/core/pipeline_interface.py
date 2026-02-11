@@ -1306,6 +1306,8 @@ class PipelineInterface:
                 status = "completed"
             elif torrent.status == "failed":
                 status = "failed"
+            elif torrent.status == "skipped":
+                status = "skipped"
             elif torrent.status == "cancelled":
                 status = "cancelled"
             else:

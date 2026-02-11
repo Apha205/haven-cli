@@ -97,10 +97,10 @@ class BitTorrentProgressBridge:
         """Sync active torrents from TorrentDownload table to downloads table."""
         try:
             with self.db_session_factory() as session:
-                # Query active torrents
+                # Query active torrents (include skipped for TUI visibility)
                 active_torrents = session.query(TorrentDownload).filter(
                     TorrentDownload.status.in_([
-                        "downloading", "paused", "checking"
+                        "downloading", "paused", "checking", "skipped"
                     ])
                 ).all()
                 

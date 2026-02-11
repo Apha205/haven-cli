@@ -204,7 +204,8 @@ class UploadStep(ConditionalStep):
         # Get Filecoin configuration
         filecoin_config = self._get_filecoin_config(context)
         
-        # Get JS Runtime Bridge
+        # Get JS Runtime Bridge for progress notifications
+        # Note: Actual JS calls use _js_call_with_retry for resilience
         bridge = await self._get_js_bridge()
         
         # Create progress callback
@@ -258,9 +259,8 @@ class UploadStep(ConditionalStep):
                 "synapse.uploadProgress", handle_progress
             )
             
-            # Upload to Filecoin
+            # Upload to Filecoin (uses _js_call_with_retry internally)
             upload_result = await self._upload_to_filecoin(
-                bridge,
                 video_path,
                 filecoin_config,
                 context.encryption_metadata,
@@ -275,7 +275,6 @@ class UploadStep(ConditionalStep):
                     try:
                         logger.info(f"Uploading VLM AI.json file: {ai_json_path}")
                         vlm_json_result = await self._upload_vlm_json(
-                            bridge,
                             ai_json_path,
                             filecoin_config,
                             upload_result.get("root_cid", ""),  # Parent CID
@@ -370,9 +369,38 @@ class UploadStep(ConditionalStep):
         """
         return await JSBridgeManager.get_instance().get_bridge()
     
+    async def _js_call_with_retry(
+        self,
+        method: str,
+        params: Optional[Dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+        max_retries: int = 3,
+    ) -> Any:
+        """Call JS runtime method with automatic retry on bridge failure.
+        
+        This method wraps JSBridgeManager.call_with_retry() to handle
+        bridge restart scenarios gracefully. When the bridge is stopped
+        (e.g., due to health check failure or concurrent operation timeout),
+        this method will automatically retry with a fresh bridge.
+        
+        Args:
+            method: The method name to call
+            params: Optional parameters for the method
+            timeout: Optional timeout override
+            max_retries: Maximum retry attempts (default 3)
+            
+        Returns:
+            The result from the JS runtime
+            
+        Raises:
+            RuntimeError: If all retry attempts fail
+        """
+        return await JSBridgeManager.get_instance().call_with_retry(
+            method, params, max_retries=max_retries, timeout=timeout
+        )
+    
     async def _upload_to_filecoin(
         self,
-        bridge: JSRuntimeBridge,
         video_path: str,
         config: Dict[str, Any],
         encryption_metadata: Optional[EncryptionMetadata],
@@ -386,8 +414,10 @@ class UploadStep(ConditionalStep):
         3. Wait for transaction confirmation (optional)
         4. Return CIDs and transaction hash
         
+        Uses _js_call_with_retry for all JS runtime calls to handle
+        bridge restart scenarios gracefully during concurrent uploads.
+        
         Args:
-            bridge: JS Runtime Bridge instance
             video_path: Path to video file
             config: Filecoin configuration
             encryption_metadata: Encryption metadata if encrypted
@@ -407,7 +437,7 @@ class UploadStep(ConditionalStep):
         network_config = get_network_config(network_mode)
         
         try:
-            await bridge.call("synapse.connect", {
+            await self._js_call_with_retry("synapse.connect", {
                 "rpcUrl": network_config.filecoin_rpc_url,
                 "networkMode": network_mode,
             })
@@ -435,9 +465,10 @@ class UploadStep(ConditionalStep):
         logger.info(f"Starting Filecoin upload for: {file_to_upload}")
         
         try:
-            # Use a longer timeout for Filecoin upload (180 seconds)
+            # Use a longer timeout for Filecoin upload (600 seconds)
             # Filecoin uploads typically take 60-120 seconds for small files
-            result = await bridge.call(
+            # Use max_retries=1 for upload since it's a long-running operation
+            result = await self._js_call_with_retry(
                 "synapse.upload",
                 {
                     "filePath": file_to_upload,
@@ -447,7 +478,8 @@ class UploadStep(ConditionalStep):
                     },
                     "onProgress": True,  # Enable progress notifications
                 },
-                timeout=180.0,  # 3 minutes timeout for upload
+                timeout=600.0,  # 10 minutes timeout for upload
+                max_retries=1,  # Only 1 retry for long uploads
             )
         except Exception as e:
             logger.error(f"Filecoin upload failed: {e}")
@@ -459,13 +491,13 @@ class UploadStep(ConditionalStep):
         if config.get("wait_for_deal", False):
             logger.info("Waiting for deal confirmation...")
             try:
-                status = await bridge.call("synapse.getStatus", {"cid": result["cid"]})
+                status = await self._js_call_with_retry("synapse.getStatus", {"cid": result["cid"]})
                 max_wait_attempts = 60  # Max 5 minutes (60 * 5s)
                 attempts = 0
                 
                 while status.get("status") == "pending" and attempts < max_wait_attempts:
                     await asyncio.sleep(5)
-                    status = await bridge.call("synapse.getStatus", {"cid": result["cid"]})
+                    status = await self._js_call_with_retry("synapse.getStatus", {"cid": result["cid"]})
                     attempts += 1
                     logger.debug(f"Deal status: {status.get('status')} (attempt {attempts})")
                 
@@ -491,7 +523,6 @@ class UploadStep(ConditionalStep):
     
     async def _upload_vlm_json(
         self,
-        bridge: JSRuntimeBridge,
         ai_json_path: str,
         config: Dict[str, Any],
         parent_cid: str,
@@ -501,8 +532,9 @@ class UploadStep(ConditionalStep):
         This uploads the AI analysis JSON file separately from the video,
         allowing the backend to reference it by CID for Arkiv sync.
         
+        Uses _js_call_with_retry for resilience during concurrent operations.
+        
         Args:
-            bridge: JS Runtime Bridge instance
             ai_json_path: Path to the AI.json file
             config: Filecoin configuration
             parent_cid: CID of the parent video file (for metadata linking)
@@ -520,7 +552,7 @@ class UploadStep(ConditionalStep):
             raise FileNotFoundError(f"AI.json file not found: {ai_json_path}")
         
         try:
-            result = await bridge.call(
+            result = await self._js_call_with_retry(
                 "synapse.upload",
                 {
                     "filePath": ai_json_path,

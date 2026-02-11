@@ -744,6 +744,7 @@ class TorrentDownloadRepository:
         output_path: Optional[str] = None,
         selected_file_index: Optional[int] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        error_message: Optional[str] = None,
     ) -> TorrentDownload:
         """
         Create a new torrent download record.
@@ -758,6 +759,7 @@ class TorrentDownloadRepository:
             output_path: Path to save the downloaded file
             selected_file_index: Index of the file being downloaded
             metadata: Additional metadata
+            error_message: Error message if status is 'skipped' or 'failed'
 
         Returns:
             Created TorrentDownload instance
@@ -772,6 +774,7 @@ class TorrentDownloadRepository:
             output_path=output_path,
             selected_file_index=selected_file_index,
             download_metadata=metadata or {},
+            error_message=error_message,
         )
         self.session.add(download)
         self.session.commit()

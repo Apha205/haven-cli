@@ -144,6 +144,7 @@ class BitTorrentProgressBridge:
             "failed": DownloadStatus.FAILED,
             "stalled": DownloadStatus.STALLED,
             "checking": DownloadStatus.VERIFYING,
+            "skipped": DownloadStatus.SKIPPED,
         }
         
         # Find associated video if exists

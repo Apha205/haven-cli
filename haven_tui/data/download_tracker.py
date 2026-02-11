@@ -31,6 +31,7 @@ class DownloadStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     STALLED = "stalled"  # No progress for timeout period
+    SKIPPED = "skipped"  # Skipped due to size limits or other criteria
 
 
 def format_bytes(size_bytes: float) -> str:

@@ -122,12 +122,9 @@ class EncryptStep(ConditionalStep):
             access_conditions = self._get_access_conditions(context)
             logger.info(f"Using access pattern: {context.options.get('access_pattern', 'owner_only')}")
             
-            # Get JS Runtime Bridge via manager
-            bridge = await self._get_js_bridge()
-            
             # Encrypt via Lit Protocol with progress tracking
+            # Uses _js_call_with_retry internally for resilience
             encryption_result = await self._encrypt_with_lit(
-                bridge,
                 video_path,
                 access_conditions,
                 context,
@@ -200,9 +197,38 @@ class EncryptStep(ConditionalStep):
         """
         return await JSBridgeManager.get_instance().get_bridge()
     
+    async def _js_call_with_retry(
+        self,
+        method: str,
+        params: Optional[Dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+        max_retries: int = 3,
+    ) -> Any:
+        """Call JS runtime method with automatic retry on bridge failure.
+        
+        This method wraps JSBridgeManager.call_with_retry() to handle
+        bridge restart scenarios gracefully. When the bridge is stopped
+        (e.g., due to health check failure or concurrent operation timeout),
+        this method will automatically retry with a fresh bridge.
+        
+        Args:
+            method: The method name to call
+            params: Optional parameters for the method
+            timeout: Optional timeout override
+            max_retries: Maximum retry attempts (default 3)
+            
+        Returns:
+            The result from the JS runtime
+            
+        Raises:
+            RuntimeError: If all retry attempts fail
+        """
+        return await JSBridgeManager.get_instance().call_with_retry(
+            method, params, max_retries=max_retries, timeout=timeout
+        )
+    
     async def _encrypt_with_lit(
         self,
-        bridge: JSRuntimeBridge,
         video_path: str,
         access_conditions: List[Dict[str, Any]],
         context: PipelineContext,
@@ -217,10 +243,12 @@ class EncryptStep(ConditionalStep):
         Uses hybrid encryption (AES-256-GCM + Lit Protocol) with chunked
         encryption for progress reporting on large files.
         
+        Uses _js_call_with_retry for all JS runtime calls to handle
+        bridge restart scenarios gracefully during concurrent operations.
+        
         Task 12: Receives progress notifications and updates database tables.
         
         Args:
-            bridge: JS Runtime Bridge instance
             video_path: Path to video file
             access_conditions: Access control conditions
             context: Pipeline context for progress updates
@@ -250,7 +278,7 @@ class EncryptStep(ConditionalStep):
         logger.info(f"Connecting to Lit Protocol network: {lit_network} (mode: {network_mode})")
         
         try:
-            await bridge.call("lit.connect", {
+            await self._js_call_with_retry("lit.connect", {
                 "network": lit_network,
             })
         except Exception as e:
@@ -268,6 +296,9 @@ class EncryptStep(ConditionalStep):
         private_key = os.environ.get("HAVEN_PRIVATE_KEY") or os.environ.get("PRIVATE_KEY")
         if not private_key:
             raise RuntimeError("Private key required for encryption. Set HAVEN_PRIVATE_KEY environment variable.")
+        
+        # Get bridge for progress notifications
+        bridge = await self._get_js_bridge()
         
         # Set up progress notification handler
         last_progress = [0]  # Use list to allow mutation in nested function
@@ -326,7 +357,7 @@ class EncryptStep(ConditionalStep):
             
             # Call encryptFile with progress tracking enabled
             # This uses hybrid encryption (AES-256-GCM + Lit Protocol)
-            result = await bridge.call("lit.encryptFile", {
+            result = await self._js_call_with_retry("lit.encryptFile", {
                 "filePath": video_path,
                 "chain": chain,
                 "privateKey": private_key,

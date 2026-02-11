@@ -748,15 +748,16 @@ class BitTorrentPlugin(ArchiverPlugin):
             )
             files = torrent_info.files()
             
-            # Find the largest video file within size limits
+            # Find the largest video file first, then check size limits (AND logic)
             video_extensions = self._bt_config.video_extensions
             min_video_size = self._bt_config.min_video_size
             max_video_size = self._bt_config.max_video_size
             
             largest_video_index = -1
             largest_video_size = 0
-            skipped_files = []  # Track files skipped due to size limits
+            all_video_files = []  # Track all video files found
             
+            # Step 1: Find all video files and identify the largest one
             for i in range(files.num_files()):
                 file_path = files.file_path(i)
                 file_size = files.file_size(i)
@@ -764,33 +765,38 @@ class BitTorrentPlugin(ArchiverPlugin):
                 
                 # Check if it's a video file
                 if file_ext in video_extensions:
-                    # Check if file is within size limits
-                    if file_size > max_video_size:
-                        skipped_files.append((file_path, file_size, "exceeds max_video_size"))
-                        logger.info(
-                            f"Skipping {file_path}: {file_size / (1024**3):.2f} GB "
-                            f"exceeds max limit of {max_video_size / (1024**3):.2f} GB"
-                        )
-                    elif file_size < min_video_size:
-                        skipped_files.append((file_path, file_size, "below min_video_size"))
-                        logger.debug(
-                            f"Skipping {file_path}: {file_size / (1024**2):.2f} MB "
-                            f"below min limit of {min_video_size / (1024**2):.2f} MB"
-                        )
-                    elif file_size > largest_video_size:
+                    all_video_files.append((i, file_path, file_size))
+                    if file_size > largest_video_size:
                         largest_video_size = file_size
                         largest_video_index = i
             
-            if largest_video_index == -1:
-                # No video file found within size limits
-                if skipped_files:
-                    # Log details about skipped files
-                    skipped_details = "; ".join([
-                        f"{f}: {s / (1024**3):.2f} GB ({r})" 
-                        for f, s, r in skipped_files[:5]  # Show first 5
-                    ])
-                    if len(skipped_files) > 5:
-                        skipped_details += f"; ... and {len(skipped_files) - 5} more"
+            # Step 2: If we found a largest video, check if it's within size limits
+            if largest_video_index != -1:
+                largest_video_path = files.file_path(largest_video_index)
+                
+                if largest_video_size > max_video_size:
+                    # Largest video exceeds max size - fail, don't fall back to smaller files
+                    logger.info(
+                        f"Largest video {largest_video_path}: {largest_video_size / (1024**3):.2f} GB "
+                        f"exceeds max limit of {max_video_size / (1024**3):.2f} GB"
+                    )
+                    
+                    max_size_str = f"{max_video_size / (1024**3):.1f} GB" if max_video_size >= 1024**3 else f"{max_video_size / (1024**2):.0f} MB"
+                    skip_reason = (
+                        f"Largest video file '{largest_video_path}' ({largest_video_size / (1024**3):.2f} GB) "
+                        f"exceeds max size limit of {max_size_str}. "
+                        f"Found {len(all_video_files)} video files, will not download smaller files."
+                    )
+                    
+                    # Create a skipped record in the database for TUI visibility
+                    await self._create_skipped_record(
+                        infohash=infohash,
+                        source_id=source.source_id,
+                        title=source.metadata.get("title"),
+                        magnet_uri=source.uri,
+                        skip_reason=skip_reason,
+                        total_size=largest_video_size,
+                    )
                     
                     # Clean up the torrent handle
                     async with self._session_lock:
@@ -805,14 +811,59 @@ class BitTorrentPlugin(ArchiverPlugin):
                         except Exception:
                             pass
                     
-                    # Format max size appropriately (MB if < 1 GB, otherwise GB)
-                    max_size_str = f"{max_video_size / (1024**3):.1f} GB" if max_video_size >= 1024**3 else f"{max_video_size / (1024**2):.0f} MB"
                     return ArchiveResult(
                         success=False,
-                        error=f"No video files within size limits ({min_video_size / (1024**2):.0f} MB - {max_size_str}). "
-                              f"Skipped {len(skipped_files)} files: {skipped_details}"
+                        error=skip_reason,
                     )
                 
+                if largest_video_size < min_video_size:
+                    # Largest video is below min size - fail
+                    logger.debug(
+                        f"Largest video {largest_video_path}: {largest_video_size / (1024**2):.2f} MB "
+                        f"below min limit of {min_video_size / (1024**2):.2f} MB"
+                    )
+                    
+                    skip_reason = (
+                        f"Largest video file '{largest_video_path}' ({largest_video_size / (1024**2):.2f} MB) "
+                        f"is below minimum size limit of {min_video_size / (1024**2):.0f} MB. "
+                        f"Found {len(all_video_files)} video files."
+                    )
+                    
+                    # Create a skipped record in the database for TUI visibility
+                    await self._create_skipped_record(
+                        infohash=infohash,
+                        source_id=source.source_id,
+                        title=source.metadata.get("title"),
+                        magnet_uri=source.uri,
+                        skip_reason=skip_reason,
+                        total_size=largest_video_size,
+                    )
+                    
+                    # Clean up the torrent handle
+                    async with self._session_lock:
+                        try:
+                            await self._run_in_executor(
+                                self._session.remove_torrent,
+                                handle,
+                                timeout=10.0
+                            )
+                            if infohash in self._active_downloads:
+                                del self._active_downloads[infohash]
+                        except Exception:
+                            pass
+                    
+                    return ArchiveResult(
+                        success=False,
+                        error=skip_reason,
+                    )
+                
+                # Largest video is within size limits - proceed with it
+                logger.info(
+                    f"Selected largest video: {largest_video_path} "
+                    f"({largest_video_size / (1024**3):.2f} GB) within size limits"
+                )
+            
+            if largest_video_index == -1:
                 # No video file found at all, check for any file within size limits
                 logger.warning("No video file found, checking for largest file within size limits")
                 largest_file_index = -1
@@ -1184,6 +1235,56 @@ class BitTorrentPlugin(ArchiverPlugin):
             logger.warning(f"Timeout creating download record for {infohash}")
         except Exception as e:
             logger.warning(f"Could not create download record: {e}")
+    
+    async def _create_skipped_record(
+        self,
+        infohash: str,
+        source_id: str,
+        title: Optional[str],
+        magnet_uri: str,
+        skip_reason: str,
+        total_size: int,
+    ) -> None:
+        """Create a skipped download record in the database for TUI visibility.
+        
+        This is called when a torrent is skipped due to size limits,
+        so the TUI can display it as skipped rather than having it
+        disappear entirely.
+        
+        Args:
+            infohash: Torrent infohash
+            source_id: MediaSource source_id
+            title: Torrent title
+            magnet_uri: Magnet URI
+            skip_reason: Reason the torrent was skipped
+            total_size: Total size of the selected file in bytes
+        """
+        try:
+            def _create_record():
+                with self._db_session_factory() as session:
+                    repos = RepositoryFactory(session)
+                    existing = repos.torrents.get_by_infohash(infohash)
+                    if not existing:
+                        repos.torrents.create(
+                            infohash=infohash,
+                            source_id=source_id,
+                            title=title,
+                            magnet_uri=magnet_uri,
+                            status="skipped",
+                            total_size=total_size,
+                            error_message=skip_reason,
+                            metadata={"skip_reason": skip_reason},
+                        )
+                        return True
+                    return False
+            
+            created = await self._run_db_operation(_create_record)
+            if created:
+                logger.debug(f"Created skipped record for {infohash}: {skip_reason[:50]}...")
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout creating skipped record for {infohash}")
+        except Exception as e:
+            logger.warning(f"Could not create skipped record: {e}")
     
     async def _update_download_progress(
         self,

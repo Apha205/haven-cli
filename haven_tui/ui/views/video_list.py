@@ -40,7 +40,9 @@ class VideoRow:
     plugin: str
     size: str
     eta: str
-    status: str  # "active", "pending", "completed", "failed"
+    status: str  # "active", "pending", "completed", "failed", "skipped"
+    started_at: str  # Formatted started/found time
+    skip_reason: str  # Reason for being skipped, if any
 
 
 class VideoListWidget(DataTable):
@@ -91,6 +93,8 @@ class VideoListWidget(DataTable):
     .stage-upload { color: $success; }
     .stage-sync { color: $success; }
     .stage-complete { color: $success; text-style: bold; }
+    .stage-skipped { color: $warning; text-style: italic; }
+    .stage-failed { color: $error; }
     
     /* Progress bar styling */
     .progress-complete { color: $success; }
@@ -102,13 +106,15 @@ class VideoListWidget(DataTable):
     COLUMNS: ClassVar[List[tuple[str, str, int, bool]]] = [
         ("#", "#", 4, True),
         ("sel", "✓", 3, True),  # Selection column for batch mode
-        ("title", "Title", 32, True),
-        ("stage", "Stage", 12, True),
-        ("progress", "Progress", 15, True),
-        ("speed", "Speed", 12, True),
-        ("plugin", "Plugin", 12, True),
-        ("size", "Size", 10, True),
-        ("eta", "ETA", 10, True),
+        ("title", "Title", 28, True),
+        ("stage", "Stage", 10, True),
+        ("progress", "Progress", 12, True),
+        ("speed", "Speed", 10, True),
+        ("plugin", "Plugin", 10, True),
+        ("size", "Size", 8, True),
+        ("eta", "ETA", 8, True),
+        ("started", "Started", 16, True),  # New column for started/found time
+        ("skip_reason", "Skip Reason", 20, True),  # New column for skip reason
     ]
     
     def __init__(
@@ -276,6 +282,8 @@ class VideoListWidget(DataTable):
             return "stage-complete"
         elif status == "failed":
             return "stage-failed"
+        elif status == "skipped":
+            return "stage-skipped"
         return f"stage-{stage.lower()}"
     
     def _truncate_title(self, title: str, max_length: int = 35) -> str:
@@ -291,6 +299,41 @@ class VideoListWidget(DataTable):
         if len(title) <= max_length:
             return title
         return title[: max_length - 3] + "..."
+    
+    def _format_started_at(self, started_at: Optional[datetime], created_at: Optional[datetime]) -> str:
+        """Format started/found time for display.
+        
+        Args:
+            started_at: When processing started (download began)
+            created_at: When the video was added to the system
+            
+        Returns:
+            Formatted time string (e.g., "02/08 14:30" or "Pending")
+        """
+        # Prefer started_at if available, otherwise use created_at
+        timestamp = started_at or created_at
+        
+        if timestamp is None:
+            return "-"
+        
+        # Format as MM/DD HH:MM
+        return timestamp.strftime("%m/%d %H:%M")
+    
+    def _truncate_skip_reason(self, reason: Optional[str], max_length: int = 20) -> str:
+        """Truncate skip reason to fit column width.
+        
+        Args:
+            reason: The skip reason
+            max_length: Maximum length
+            
+        Returns:
+            Truncated skip reason or empty string
+        """
+        if not reason:
+            return ""
+        if len(reason) <= max_length:
+            return reason
+        return reason[: max_length - 3] + "..."
     
     def refresh_data(self) -> None:
         """Refresh the video list data from the state manager.
@@ -325,6 +368,12 @@ class VideoListWidget(DataTable):
         # Build row data
         self._video_rows = []
         for i, video in enumerate(videos, 1):
+            # Determine status - check for skipped
+            status = video.overall_status
+            skip_reason = getattr(video, 'skip_reason', None)
+            if skip_reason:
+                status = "skipped"
+            
             row = VideoRow(
                 index=i,
                 video_id=video.id,
@@ -335,7 +384,12 @@ class VideoListWidget(DataTable):
                 plugin=getattr(video, 'plugin', 'unknown'),
                 size=self._format_size(getattr(video, 'file_size', 0)),
                 eta=self._format_eta(video.stage_eta if video.current_stage == PipelineStage.DOWNLOAD else None),
-                status=video.overall_status,
+                status=status,
+                started_at=self._format_started_at(
+                    getattr(video, 'started_at', None),
+                    getattr(video, 'created_at', None)
+                ),
+                skip_reason=self._truncate_skip_reason(skip_reason),
             )
             self._video_rows.append(row)
         
@@ -486,6 +540,11 @@ class VideoListWidget(DataTable):
             if self.batch_operations and self.batch_operations.is_selected(row.video_id):
                 sel_indicator = "✓"
             
+            # Format skip reason with warning style if present
+            skip_reason_display = ""
+            if row.skip_reason:
+                skip_reason_display = f"[warning]{row.skip_reason}[/warning]"
+            
             cells = [
                 str(row.index),
                 sel_indicator,
@@ -496,6 +555,8 @@ class VideoListWidget(DataTable):
                 row.plugin,
                 row.size,
                 row.eta,
+                row.started_at,
+                skip_reason_display,
             ]
             
             # Add row with metadata for selection

@@ -220,6 +220,8 @@ class TestVideoRow:
             size="1.2GB",
             eta="5:30",
             status="active",
+            started_at="02/08 14:30",
+            skip_reason="",
         )
         
         assert row.index == 1
@@ -232,6 +234,28 @@ class TestVideoRow:
         assert row.size == "1.2GB"
         assert row.eta == "5:30"
         assert row.status == "active"
+        assert row.started_at == "02/08 14:30"
+        assert row.skip_reason == ""
+    
+    def test_video_row_with_skip_reason(self):
+        """Test creating a VideoRow with skip reason."""
+        row = VideoRow(
+            index=2,
+            video_id=101,
+            title="Skipped Video",
+            stage="upload",
+            progress=0.0,
+            speed="-",
+            plugin="bittorrent",
+            size="5.0GB",
+            eta="--:--",
+            status="skipped",
+            started_at="02/08 15:00",
+            skip_reason="exceeded configured size limit",
+        )
+        
+        assert row.status == "skipped"
+        assert row.skip_reason == "exceeded configured size limit"
 
 
 # =============================================================================

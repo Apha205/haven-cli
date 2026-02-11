@@ -90,12 +90,16 @@ class VideoState:
     overall_status: str = "pending"  # "pending" | "active" | "completed" | "failed"
     current_stage: str = "download"
     
+    # Skip tracking
+    skip_reason: Optional[str] = None  # Reason for being skipped (e.g., "exceeded configured size limit")
+    
     # Speed history for graphing (circular buffer - 300 points = 5 minutes at 1 sample/sec)
     speed_history: deque = field(default_factory=lambda: deque(maxlen=300))
     
     # Timestamps
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    started_at: Optional[datetime] = None  # When processing started (download began)
     
     def __post_init__(self):
         """Validate status values after initialization."""
@@ -216,8 +220,10 @@ class VideoState:
             'is_active': self.is_active,
             'has_failed': self.has_failed,
             'is_completed': self.is_completed,
+            'skip_reason': self.skip_reason,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+            'started_at': self.started_at.isoformat() if self.started_at else None,
         }
 
 
@@ -406,6 +412,7 @@ class StateManager:
             (EventType.STEP_FAILED, self._on_step_failed),
             (EventType.PIPELINE_STARTED, self._on_pipeline_started),
             (EventType.VIDEO_INGESTED, self._on_video_ingested),
+            (EventType.STEP_SKIPPED, self._on_step_skipped),
         ]
         
         for event_type, handler in event_handlers:
@@ -535,6 +542,10 @@ class StateManager:
             state.download_status = "active"
             state.current_stage = "download"
             state.overall_status = "active"
+            
+            # Set started_at when download first becomes active
+            if state.started_at is None:
+                state.started_at = datetime.now(timezone.utc)
             
             if 'speed' in payload:
                 state.download_speed = float(payload['speed'])
@@ -835,3 +846,40 @@ class StateManager:
         
         if video_id in self._state:
             self._notify_change(video_id, 'overall_status', 'pending')
+    
+    async def _on_step_skipped(self, event: Event) -> None:
+        """Handle step skipped events.
+        
+        Args:
+            event: The step skipped event
+        """
+        payload = event.payload
+        video_id = payload.get('video_id')
+        reason = payload.get('reason', '')
+        step_name = payload.get('step_name', '')
+        
+        if not video_id:
+            return
+        
+        # Load video first if needed (outside lock to avoid reentrancy issues)
+        if video_id not in self._state:
+            await self._load_video(video_id)
+        
+        if video_id not in self._state:
+            return
+        
+        async with self._lock:
+            state = self._state[video_id]
+            
+            # Store the skip reason
+            if reason:
+                # If there's already a skip reason, append the new one
+                if state.skip_reason:
+                    state.skip_reason = f"{state.skip_reason}; {reason}"
+                else:
+                    state.skip_reason = reason
+            
+            state.update_timestamp()
+        
+        if reason:
+            self._notify_change(video_id, 'skip_reason', reason)

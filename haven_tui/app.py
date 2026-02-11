@@ -22,7 +22,7 @@ from haven_tui.core.state_manager import StateManager
 from haven_tui.core.pipeline_interface import PipelineInterface
 from haven_tui.data.event_consumer import TUIEventConsumer as EventConsumer
 from haven_tui.data.refresher import DataRefresher as Refresher
-from haven_tui.data.repositories import SpeedHistoryRepository
+from haven_tui.data.repositories import SpeedHistoryRepository, JobHistoryRepository, PipelineSnapshotRepository
 from haven_tui.ui.views.video_list import VideoListScreen
 from haven_tui.ui.views.video_detail import VideoDetailScreen
 from haven_tui.ui.views.analytics import AnalyticsDashboardScreen
@@ -90,10 +90,8 @@ class HavenTUIApp(App[None]):
     ]
     
     # Note: video_detail screen is created dynamically with video_id
-    SCREENS = {
-        "analytics": AnalyticsDashboardScreen,
-        "event_log": EventLogScreen,
-    }
+    # Screens are installed dynamically in _setup_screens() with proper dependencies
+    SCREENS = {}
     
     def __init__(
         self,
@@ -127,6 +125,8 @@ class HavenTUIApp(App[None]):
         self.event_consumer: Optional[EventConsumer] = None
         self.refresher: Optional[Refresher] = None
         self.speed_history_repo: Optional[SpeedHistoryRepository] = None
+        self.job_history_repo: Optional[JobHistoryRepository] = None
+        self.snapshot_repo: Optional[PipelineSnapshotRepository] = None
         self._init_error: Optional[str] = None
     
     def compose(self) -> ComposeResult:
@@ -159,8 +159,17 @@ class HavenTUIApp(App[None]):
             
             # Push the main video list screen
             if self.state_manager:
-                await self.push_screen("video_list")
+                try:
+                    await self.push_screen("video_list")
+                except Exception as screen_error:
+                    # If screen is already installed, just switch to it
+                    if "already installed" in str(screen_error).lower():
+                        self.switch_screen("video_list")
+                    else:
+                        raise screen_error
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self._init_error = str(e)
             self.refresh()
     
@@ -188,6 +197,12 @@ class HavenTUIApp(App[None]):
             db_url=db_url,
             max_history_seconds=self.config.display.graph_history_seconds,
         )
+        
+        # Initialize job history and snapshot repositories for detail views
+        # Get session from pipeline interface
+        if self.pipeline_interface._db_session:
+            self.job_history_repo = JobHistoryRepository(self.pipeline_interface._db_session)
+            self.snapshot_repo = PipelineSnapshotRepository(self.pipeline_interface._db_session)
         
         # Initialize event consumer - skip for now as it requires EventBus
         # The StateManager already handles events directly from PipelineInterface
@@ -217,8 +232,17 @@ class HavenTUIApp(App[None]):
         # Install the screen
         self.install_screen(video_list_screen, "video_list")
         
+        # Create and install analytics dashboard screen
+        analytics_screen = AnalyticsDashboardScreen(
+            config=self.config,
+        )
+        self.install_screen(analytics_screen, "analytics")
+        
+        # Create and install event log screen
+        event_log_screen = EventLogScreen()
+        self.install_screen(event_log_screen, "event_log")
+        
         # Note: video_detail screen is created dynamically with video_id
-        # Other screens are defined in SCREENS class attribute
     
     def action_refresh(self) -> None:
         """Refresh the display."""

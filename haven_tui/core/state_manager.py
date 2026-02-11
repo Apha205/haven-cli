@@ -38,6 +38,8 @@ class VideoState:
     Attributes:
         id: Unique video identifier
         title: Video title for display
+        file_size: File size in bytes
+        plugin: Plugin name that downloaded this video (e.g., "youtube", "bittorrent")
         download_status: Current download state
         download_progress: Download progress (0.0 - 100.0)
         download_speed: Current download speed in bytes/sec
@@ -61,6 +63,8 @@ class VideoState:
     # Identity
     id: int
     title: str
+    file_size: int = 0  # File size in bytes
+    plugin: str = "unknown"  # Plugin name (youtube, bittorrent, etc.)
     
     # Download state
     download_status: str = "pending"  # "pending" | "active" | "paused" | "completed" | "failed"
@@ -190,6 +194,8 @@ class VideoState:
         return {
             'id': self.id,
             'title': self.title,
+            'file_size': self.file_size,
+            'plugin': self.plugin,
             'download_status': self.download_status,
             'download_progress': self.download_progress,
             'download_speed': self.download_speed,
@@ -292,6 +298,8 @@ class StateManager:
         
         # Unsubscribe from all events
         for unsubscriber in self._event_unsubscribers:
+            if unsubscriber is None:
+                continue
             try:
                 unsubscriber()
             except Exception as e:
@@ -332,6 +340,8 @@ class StateManager:
             state = VideoState(
                 id=video.id,
                 title=video.title or f"Video {video.id}",
+                file_size=video.file_size or 0,
+                plugin=video.plugin_name or "unknown",
                 created_at=video.created_at or datetime.now(timezone.utc),
                 updated_at=video.updated_at or datetime.now(timezone.utc),
             )
@@ -400,7 +410,8 @@ class StateManager:
         
         for event_type, handler in event_handlers:
             unsubscriber = self._pipeline.on_event(event_type, handler)
-            self._event_unsubscribers.append(unsubscriber)
+            if unsubscriber is not None:
+                self._event_unsubscribers.append(unsubscriber)
     
     def on_change(self, callback: Callable[[int, str, Any], None]) -> None:
         """Register callback for state changes.

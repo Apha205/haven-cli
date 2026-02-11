@@ -72,6 +72,7 @@ class EventLogWidget(DataTable):
         event_bus: The EventBus to subscribe to for events
         max_entries: Maximum number of entries to keep in memory
         filter_event_type: Optional filter for specific event type
+        filter_video_id: Optional filter for specific video ID
         search_query: Current search query for filtering messages
     """
     
@@ -136,6 +137,7 @@ class EventLogWidget(DataTable):
         self.max_entries = max_entries
         self.entries: deque[LogEntry] = deque(maxlen=max_entries)
         self.filter_event_type: Optional[EventType] = None
+        self.filter_video_id: Optional[int] = None
         self.search_query: str = ""
         self._unsubscribe: Optional[Callable[[], None]] = None
         self._auto_scroll: bool = True
@@ -143,9 +145,10 @@ class EventLogWidget(DataTable):
         # Track visible entries for cursor management
         self._visible_indices: List[int] = []
     
-    def compose(self) -> None:
+    def compose(self):
         """Set up the table columns."""
         self._setup_columns()
+        return []
     
     def _setup_columns(self) -> None:
         """Configure table columns."""
@@ -403,6 +406,11 @@ class EventLogWidget(DataTable):
         Returns:
             True if entry should be displayed
         """
+        # Check video_id filter
+        if self.filter_video_id is not None:
+            if entry.video_id != self.filter_video_id:
+                return False
+        
         # Check event type filter
         if self.filter_event_type is not None:
             if entry.event_type != self.filter_event_type:
@@ -470,6 +478,15 @@ class EventLogWidget(DataTable):
             event_type: Event type to filter by, or None to clear
         """
         self.filter_event_type = event_type
+        self._refresh_display()
+    
+    def set_video_filter(self, video_id: Optional[int]) -> None:
+        """Set video ID filter.
+        
+        Args:
+            video_id: Video ID to filter by, or None to clear
+        """
+        self.filter_video_id = video_id
         self._refresh_display()
     
     def set_search(self, query: str) -> None:
@@ -562,6 +579,10 @@ class EventLogHeader(Static):
         self._filtered_entries: int = 0
         self._filter_name: Optional[str] = None
     
+    def compose(self):
+        """Compose the widget - Static widgets don't yield children."""
+        return []
+    
     def update_stats(
         self,
         total: int,
@@ -601,11 +622,12 @@ class EventLogFooter(Static):
     }
     """
     
-    def compose(self) -> None:
+    def compose(self):
         """Set up the footer content."""
         self.update(
             "[f] Filter  [/] Search  [e] Export  [c] Clear  [a] Auto-scroll  [q] Back"
         )
+        return []
 
 
 class EventTypeFilterModal(ModalScreen[Optional[EventType]]):
@@ -971,6 +993,282 @@ class EventLogScreen(Screen):
     def action_refresh(self) -> None:
         """Manually refresh the log display."""
         log_widget = self.query_one("#event-log-widget", EventLogWidget)
+        log_widget.refresh_log()
+        self._update_header()
+        self.app.notify("Refreshed", timeout=1.0)
+
+
+class VideoLogsHeader(Static):
+    """Header widget for video-specific logs view."""
+    
+    DEFAULT_CSS = """
+    VideoLogsHeader {
+        height: 3;
+        background: $surface-darken-2;
+        color: $text;
+        content-align: center middle;
+        text-style: bold;
+    }
+    """
+    
+    def __init__(self, video_id: Optional[int] = None, video_title: str = "", **kwargs: Any) -> None:
+        """Initialize the header.
+        
+        Args:
+            video_id: Video ID being viewed
+            video_title: Title of the video
+            **kwargs: Additional arguments
+        """
+        super().__init__(**kwargs)
+        self._video_id = video_id
+        self._video_title = video_title
+        self._total_entries: int = 0
+        self._filtered_entries: int = 0
+    
+    def compose(self):
+        """Compose the widget - Static widgets don't yield children."""
+        return []
+    
+    def on_mount(self) -> None:
+        """Update display on mount."""
+        self._update_content()
+    
+    def set_video_info(self, video_id: int, video_title: str) -> None:
+        """Set video information.
+        
+        Args:
+            video_id: Video ID
+            video_title: Video title
+        """
+        self._video_id = video_id
+        self._video_title = video_title
+        self._update_content()
+    
+    def update_stats(self, total: int, filtered: int) -> None:
+        """Update header statistics.
+        
+        Args:
+            total: Total number of entries
+            filtered: Number of entries after filtering
+        """
+        self._total_entries = total
+        self._filtered_entries = filtered
+        self._update_content()
+    
+    def _update_content(self) -> None:
+        """Update the header content."""
+        title = self._truncate_title(self._video_title, 40) if self._video_title else f"Video #{self._video_id}"
+        text = f"Logs for {title} [{self._filtered_entries} entries]"
+        self.update(text)
+    
+    def _truncate_title(self, title: str, max_length: int) -> str:
+        """Truncate title to fit display."""
+        if len(title) <= max_length:
+            return title
+        return title[:max_length - 3] + "..."
+
+
+class VideoLogsFooter(Static):
+    """Footer widget for video logs view."""
+    
+    DEFAULT_CSS = """
+    VideoLogsFooter {
+        height: 1;
+        background: $surface-darken-2;
+        color: $text-muted;
+        content-align: center middle;
+    }
+    """
+    
+    def compose(self):
+        """Set up the footer content."""
+        self.update(
+            "[f] Filter  [/] Search  [e] Export  [a] Auto-scroll  [r] Refresh  [q] Back"
+        )
+        return []
+
+
+class VideoLogsScreen(Screen):
+    """Screen displaying logs for a specific video.
+    
+    This screen shows all pipeline events for a single video,
+    filtered by video_id. It's similar to EventLogScreen but
+    pre-filtered to show only events for one video.
+    
+    Attributes:
+        video_id: ID of the video to show logs for
+        video_title: Title of the video (for display)
+        event_bus: EventBus to subscribe to
+        max_entries: Maximum number of entries to keep
+    """
+    
+    DEFAULT_CSS = """
+    VideoLogsScreen {
+        layout: vertical;
+    }
+    
+    VideoLogsScreen > #video-logs-container {
+        height: 100%;
+        width: 100%;
+        layout: vertical;
+    }
+    
+    VideoLogsScreen > #video-logs-container > #header-container {
+        height: auto;
+        dock: top;
+    }
+    
+    VideoLogsScreen > #video-logs-container > #content-container {
+        height: 1fr;
+        width: 100%;
+    }
+    
+    VideoLogsScreen > #video-logs-container > #footer-container {
+        height: auto;
+        dock: bottom;
+    }
+    
+    VideoLogsScreen > #video-logs-container > #content-container > EventLogWidget {
+        height: 100%;
+        width: 100%;
+    }
+    """
+    
+    BINDINGS = [
+        Binding("q", "back", "Back"),
+        Binding("f", "filter", "Filter"),
+        Binding("slash", "search", "Search"),
+        Binding("e", "export", "Export"),
+        Binding("a", "toggle_auto_scroll", "Auto-scroll"),
+        Binding("r", "refresh", "Refresh"),
+    ]
+    
+    def __init__(
+        self,
+        video_id: int,
+        video_title: str = "",
+        event_bus: Optional[EventBus] = None,
+        max_entries: int = 500,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize the video logs screen.
+        
+        Args:
+            video_id: ID of the video to show logs for
+            video_title: Title of the video (for display)
+            event_bus: EventBus to subscribe to (uses default if None)
+            max_entries: Maximum number of entries to keep
+            **kwargs: Additional arguments passed to Screen
+        """
+        super().__init__(**kwargs)
+        self.video_id = video_id
+        self.video_title = video_title
+        self.event_bus = event_bus
+        self.max_entries = max_entries
+    
+    def compose(self) -> None:
+        """Compose the screen layout."""
+        with Container(id="video-logs-container"):
+            with Container(id="header-container"):
+                yield VideoLogsHeader(
+                    video_id=self.video_id,
+                    video_title=self.video_title,
+                    id="video-logs-header",
+                )
+            
+            with Container(id="content-container"):
+                log_widget = EventLogWidget(
+                    event_bus=self.event_bus,
+                    max_entries=self.max_entries,
+                    id="video-log-widget",
+                )
+                # Pre-filter by video_id
+                log_widget.filter_video_id = self.video_id
+                yield log_widget
+            
+            with Container(id="footer-container"):
+                yield VideoLogsFooter()
+    
+    def on_mount(self) -> None:
+        """Handle mount event."""
+        self._update_header()
+    
+    def _update_header(self) -> None:
+        """Update the header with current stats."""
+        try:
+            header = self.query_one("#video-logs-header", VideoLogsHeader)
+            log_widget = self.query_one("#video-log-widget", EventLogWidget)
+            
+            header.set_video_info(self.video_id, self.video_title)
+            header.update_stats(
+                total=log_widget.get_entry_count(),
+                filtered=log_widget.get_filtered_count(),
+            )
+        except Exception:
+            pass  # Widgets may not be mounted yet
+    
+    def action_back(self) -> None:
+        """Navigate back to the video detail view."""
+        self.app.pop_screen()
+    
+    def action_filter(self) -> None:
+        """Open filter dialog."""
+        def on_filter_result(event_type: Optional[EventType]) -> None:
+            log_widget = self.query_one("#video-log-widget", EventLogWidget)
+            log_widget.set_filter(event_type)
+            self._update_header()
+            
+            if event_type:
+                self.app.notify(f"Filtered by: {event_type.name}", timeout=2.0)
+            else:
+                self.app.notify("Filter cleared", timeout=1.0)
+        
+        self.push_screen(EventTypeFilterModal(), on_filter_result)
+    
+    def action_search(self) -> None:
+        """Open search dialog."""
+        log_widget = self.query_one("#video-log-widget", EventLogWidget)
+        
+        def on_search_result(query: str) -> None:
+            log_widget.set_search(query)
+            self._update_header()
+            
+            if query:
+                self.app.notify(f"Searching for: {query}", timeout=2.0)
+            else:
+                self.app.notify("Search cleared", timeout=1.0)
+        
+        self.push_screen(SearchModal(log_widget.search_query), on_search_result)
+    
+    def action_export(self) -> None:
+        """Export log to file."""
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        default_path = f"haven_video_{self.video_id}_log_{timestamp}.log"
+        
+        def on_export_path(path: str) -> None:
+            if not path:
+                self.app.notify("Export cancelled", timeout=1.0)
+                return
+            
+            try:
+                log_widget = self.query_one("#video-log-widget", EventLogWidget)
+                log_widget.export(path)
+                self.app.notify(f"Log exported to: {path}", timeout=3.0)
+            except Exception as e:
+                self.app.notify(f"Export failed: {e}", severity="error", timeout=3.0)
+        
+        self.push_screen(ExportModal(default_path), on_export_path)
+    
+    def action_toggle_auto_scroll(self) -> None:
+        """Toggle auto-scroll."""
+        log_widget = self.query_one("#video-log-widget", EventLogWidget)
+        new_state = log_widget.toggle_auto_scroll()
+        status = "ON" if new_state else "OFF"
+        self.app.notify(f"Auto-scroll: {status}", timeout=1.5)
+    
+    def action_refresh(self) -> None:
+        """Manually refresh the log display."""
+        log_widget = self.query_one("#video-log-widget", EventLogWidget)
         log_widget.refresh_log()
         self._update_header()
         self.app.notify("Refreshed", timeout=1.0)

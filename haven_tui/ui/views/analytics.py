@@ -75,6 +75,10 @@ class ASCIIBarChart(Static):
         self.unit = unit
         self.show_values = show_values
     
+    def compose(self):
+        """Compose the widget - Static widgets don't yield children."""
+        return []
+    
     def update_data(self, data: Dict[str, int]) -> None:
         """Update the chart data and refresh.
         
@@ -82,12 +86,13 @@ class ASCIIBarChart(Static):
             data: New data dictionary
         """
         self.data = data
-        self.refresh()
+        self._update_display()
     
-    def render(self) -> str:
-        """Render the bar chart as a string."""
+    def _update_display(self) -> None:
+        """Update the bar chart display."""
         if not self.data:
-            return self._render_empty()
+            self.update(self._render_empty())
+            return
         
         lines = []
         
@@ -117,7 +122,7 @@ class ASCIIBarChart(Static):
             else:
                 lines.append(f"  {label_str} │{bar}")
         
-        return "\n".join(lines)
+        self.update("\n".join(lines))
     
     def _render_empty(self) -> str:
         """Render empty state."""
@@ -167,12 +172,13 @@ class HorizontalBarChart(Static):
             data: New data dictionary
         """
         self.data = data
-        self.refresh()
+        self._update_display()
     
-    def render(self) -> str:
-        """Render the horizontal bar chart."""
+    def _update_display(self) -> None:
+        """Update the horizontal bar chart display."""
         if not self.data:
-            return self._render_empty()
+            self.update(self._render_empty())
+            return
         
         lines = []
         
@@ -202,7 +208,7 @@ class HorizontalBarChart(Static):
             
             lines.append("   ".join(row_lines))
         
-        return "\n".join(lines)
+        self.update("\n".join(lines))
     
     def _render_empty(self) -> str:
         """Render empty state."""
@@ -246,12 +252,13 @@ class StageTimingChart(Static):
             data: New data dictionary with stage times in seconds
         """
         self.data = data
-        self.refresh()
+        self._update_display()
     
-    def render(self) -> str:
-        """Render the stage timing chart."""
+    def _update_display(self) -> None:
+        """Update the stage timing chart display."""
         if not self.data:
-            return self._render_empty()
+            self.update(self._render_empty())
+            return
         
         lines = []
         
@@ -288,7 +295,7 @@ class StageTimingChart(Static):
             
             lines.append(f"  {label} │{bar} {time_str}")
         
-        return "\n".join(lines)
+        self.update("\n".join(lines))
     
     def _format_duration(self, seconds: float) -> str:
         """Format duration in human-readable form.
@@ -353,12 +360,13 @@ class SuccessRateChart(Static):
             data: New data dictionary with success rate info
         """
         self.data = data
-        self.refresh()
+        self._update_display()
     
-    def render(self) -> str:
-        """Render the success rate chart."""
+    def _update_display(self) -> None:
+        """Update the success rate chart display."""
         if not self.data:
-            return self._render_empty()
+            self.update(self._render_empty())
+            return
         
         lines = []
         
@@ -399,7 +407,7 @@ class SuccessRateChart(Static):
             
             lines.append(f"  {label} │{bar_style}{bar}[/] {success_rate:.0f}%")
         
-        return "\n".join(lines)
+        self.update("\n".join(lines))
     
     def _render_empty(self) -> str:
         """Render empty state."""
@@ -443,12 +451,13 @@ class PluginUsageChart(Static):
             data: New data dictionary with plugin percentages
         """
         self.data = data
-        self.refresh()
+        self._update_display()
     
-    def render(self) -> str:
-        """Render the plugin usage chart."""
+    def _update_display(self) -> None:
+        """Update the plugin usage chart display."""
         if not self.data:
-            return self._render_empty()
+            self.update(self._render_empty())
+            return
         
         lines = []
         
@@ -469,7 +478,7 @@ class PluginUsageChart(Static):
             
             lines.append(f"  {label} │{bar} {percentage:.0f}%")
         
-        return "\n".join(lines)
+        self.update("\n".join(lines))
     
     def _render_empty(self) -> str:
         """Render empty state."""

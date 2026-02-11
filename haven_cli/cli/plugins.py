@@ -452,9 +452,11 @@ def test_plugin(
             else:
                 console.print(f"Archive test ({archive_url})... ", end="")
                 try:
+                    # Detect media type based on URI or plugin name
+                    media_type = "bittorrent" if name.lower() == "bittorrent" or archive_url.startswith("magnet:") else "video"
                     source = MediaSource(
                         source_id="test",
-                        media_type="test",
+                        media_type=media_type,
                         uri=archive_url,
                     )
                     result = await plugin.archive(source)

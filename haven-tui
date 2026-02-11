@@ -1,0 +1,18 @@
+#!/bin/bash
+# Haven TUI launcher script
+# Sets up the required library path for libtorrent
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_PATH="$SCRIPT_DIR/wheels/libs/usr/lib"
+
+if [ -d "$LIB_PATH" ]; then
+    export LD_LIBRARY_PATH="$LIB_PATH:$LD_LIBRARY_PATH"
+fi
+
+# Activate venv if not already activated
+if [ -z "$VIRTUAL_ENV" ]; then
+    source "$SCRIPT_DIR/.venv/bin/activate"
+fi
+
+# Run the TUI
+exec python3 -m haven_tui "$@"

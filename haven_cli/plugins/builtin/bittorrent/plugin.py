@@ -748,30 +748,103 @@ class BitTorrentPlugin(ArchiverPlugin):
             )
             files = torrent_info.files()
             
-            # Find the largest video file
+            # Find the largest video file within size limits
             video_extensions = self._bt_config.video_extensions
+            min_video_size = self._bt_config.min_video_size
+            max_video_size = self._bt_config.max_video_size
+            
             largest_video_index = -1
             largest_video_size = 0
+            skipped_files = []  # Track files skipped due to size limits
             
             for i in range(files.num_files()):
                 file_path = files.file_path(i)
                 file_size = files.file_size(i)
                 file_ext = os.path.splitext(file_path.lower())[1]
                 
-                if file_ext in video_extensions and file_size > largest_video_size:
-                    largest_video_size = file_size
-                    largest_video_index = i
+                # Check if it's a video file
+                if file_ext in video_extensions:
+                    # Check if file is within size limits
+                    if file_size > max_video_size:
+                        skipped_files.append((file_path, file_size, "exceeds max_video_size"))
+                        logger.info(
+                            f"Skipping {file_path}: {file_size / (1024**3):.2f} GB "
+                            f"exceeds max limit of {max_video_size / (1024**3):.2f} GB"
+                        )
+                    elif file_size < min_video_size:
+                        skipped_files.append((file_path, file_size, "below min_video_size"))
+                        logger.debug(
+                            f"Skipping {file_path}: {file_size / (1024**2):.2f} MB "
+                            f"below min limit of {min_video_size / (1024**2):.2f} MB"
+                        )
+                    elif file_size > largest_video_size:
+                        largest_video_size = file_size
+                        largest_video_index = i
             
             if largest_video_index == -1:
-                # No video file found, download the largest file
-                logger.warning("No video file found, downloading the largest file")
-                largest_file_index = 0
+                # No video file found within size limits
+                if skipped_files:
+                    # Log details about skipped files
+                    skipped_details = "; ".join([
+                        f"{f}: {s / (1024**3):.2f} GB ({r})" 
+                        for f, s, r in skipped_files[:5]  # Show first 5
+                    ])
+                    if len(skipped_files) > 5:
+                        skipped_details += f"; ... and {len(skipped_files) - 5} more"
+                    
+                    # Clean up the torrent handle
+                    async with self._session_lock:
+                        try:
+                            await self._run_in_executor(
+                                self._session.remove_torrent,
+                                handle,
+                                timeout=10.0
+                            )
+                            if infohash in self._active_downloads:
+                                del self._active_downloads[infohash]
+                        except Exception:
+                            pass
+                    
+                    # Format max size appropriately (MB if < 1 GB, otherwise GB)
+                    max_size_str = f"{max_video_size / (1024**3):.1f} GB" if max_video_size >= 1024**3 else f"{max_video_size / (1024**2):.0f} MB"
+                    return ArchiveResult(
+                        success=False,
+                        error=f"No video files within size limits ({min_video_size / (1024**2):.0f} MB - {max_size_str}). "
+                              f"Skipped {len(skipped_files)} files: {skipped_details}"
+                    )
+                
+                # No video file found at all, check for any file within size limits
+                logger.warning("No video file found, checking for largest file within size limits")
+                largest_file_index = -1
                 largest_file_size = 0
+                
                 for i in range(files.num_files()):
                     file_size = files.file_size(i)
-                    if file_size > largest_file_size:
+                    if min_video_size <= file_size <= max_video_size and file_size > largest_file_size:
                         largest_file_size = file_size
                         largest_file_index = i
+                
+                if largest_file_index == -1:
+                    # Clean up the torrent handle
+                    async with self._session_lock:
+                        try:
+                            await self._run_in_executor(
+                                self._session.remove_torrent,
+                                handle,
+                                timeout=10.0
+                            )
+                            if infohash in self._active_downloads:
+                                del self._active_downloads[infohash]
+                        except Exception:
+                            pass
+                    
+                    # Format max size appropriately (MB if < 1 GB, otherwise GB)
+                    max_size_str = f"{max_video_size / (1024**3):.1f} GB" if max_video_size >= 1024**3 else f"{max_video_size / (1024**2):.0f} MB"
+                    return ArchiveResult(
+                        success=False,
+                        error=f"No files within size limits ({min_video_size / (1024**2):.0f} MB - {max_size_str})"
+                    )
+                
                 largest_video_index = largest_file_index
                 largest_video_size = largest_file_size
             

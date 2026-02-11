@@ -57,11 +57,13 @@ the Haven video pipeline. It displays real-time progress, speeds,
         raise typer.Exit(code=ExitCode.MISSING_DEPENDENCY)
     
     # Import and launch the TUI
-    from haven_cli.tui.app import TUIApp
+    from haven_tui.app import HavenTUIApp
     
     try:
-        tui_app = TUIApp(config_file=str(config) if config else None)
+        tui_app = HavenTUIApp(config_path=str(config) if config else None)
         tui_app.run()
     except Exception as e:
         console.print(f"[red]Error launching TUI: {e}[/red]")
+        import traceback
+        traceback.print_exc()
         raise typer.Exit(code=ExitCode.RUNTIME_ERROR)

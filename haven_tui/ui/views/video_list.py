@@ -163,20 +163,16 @@ class VideoListWidget(DataTable):
         self.show_cursor = True
         
     def compose(self):
-        """Set up the table columns - DataTable handles its own composition."""
-        self._setup_columns()
-        return []
-        
-    def _setup_columns(self) -> None:
-        """Configure table columns based on config."""
-        # Clear existing columns
-        for key in list(self.columns.keys()):
-            self.remove_column(key)
-            
-        # Add configured columns
+        """Set up the table columns."""
         for key, label, width, visible in self.COLUMNS:
             if visible:
                 self.add_column(label, key=key, width=width)
+        return []
+    
+    def on_mount(self) -> None:
+        """Handle mount event - do initial data load."""
+        # Initial data load after widget is mounted
+        self.refresh_data()
     
     def _format_progress_bar(self, progress: float, width: int = 10) -> str:
         """Format a progress bar using Unicode block characters.
@@ -336,9 +332,9 @@ class VideoListWidget(DataTable):
                 stage=video.current_stage,
                 progress=video.current_progress,
                 speed=self._format_speed(video.current_speed),
-                plugin=video.title.split(".")[-1][:10] if "." in video.title else "youtube",
-                size=self._format_size(10485760),  # Placeholder - would come from video data
-                eta=self._format_eta(video.download_eta if video.current_stage == "download" else None),
+                plugin=getattr(video, 'plugin', 'unknown'),
+                size=self._format_size(getattr(video, 'file_size', 0)),
+                eta=self._format_eta(video.stage_eta if video.current_stage == PipelineStage.DOWNLOAD else None),
                 status=video.overall_status,
             )
             self._video_rows.append(row)
@@ -631,6 +627,10 @@ class VideoListHeader(Static):
         super().__init__(**kwargs)
         self.state_manager = state_manager
     
+    def compose(self):
+        """Compose the widget - Static widgets don't yield children."""
+        return []
+    
     def update_header(self) -> None:
         """Update the header text with current stats."""
         if self.state_manager is None:
@@ -732,8 +732,9 @@ class VideoListFooter(Static):
             # Normal mode footer
             graph_indicator = "ON" if self._show_graph else "OFF"
             self.update(
-                f"[q] Quit  [r] Refresh  [a] Auto-refresh  [d] Details  "
-                f"[g] Graph ({graph_indicator})  [f/c/e/x] Filter  [s/S] Sort  [b] Batch  [?] Help"
+                f"[q] Quit  [r] Refresh  [d] Details  "
+                f"[g] Graph ({graph_indicator})  [v] Analytics  [l] Event Log  "
+                f"[f/c/x] Filter  [s] Sort  [b] Batch  [?] Help"
             )
 
 
@@ -752,6 +753,21 @@ class VideoListScreen(Screen):
     DEFAULT_CSS = """
     VideoListScreen {
         layout: vertical;
+    }
+    
+    VideoListScreen > VideoListWidget {
+        height: 1fr;
+        width: 100%;
+    }
+    
+    VideoListScreen > #speed-graph {
+        height: 12;
+        width: 100%;
+        display: none;
+    }
+    
+    VideoListScreen > #speed-graph.visible {
+        display: block;
     }
     """
     
@@ -775,6 +791,9 @@ class VideoListScreen(Screen):
         ("X", "batch_remove", "Batch Remove"),
         ("E", "batch_export", "Batch Export"),
         ("escape", "exit_batch_mode", "Exit Batch"),
+        # Navigation to other views
+        ("v", "analytics", "Analytics"),
+        ("l", "event_log", "Event Log"),
     ]
     
     auto_refresh: reactive[bool] = reactive(True)
@@ -830,6 +849,13 @@ class VideoListScreen(Screen):
             batch_operations=self._batch_operations,
         )
         
+        # Speed graph (hidden by default, shown when 'g' is pressed)
+        # Using display: none in CSS to hide initially
+        yield SpeedGraphComponent(
+            speed_history_repo=self._speed_history_repo,
+            id="speed-graph",
+        )
+        
         yield VideoListFooter(
             show_graph=self.show_graph,
             batch_mode=self.batch_mode,
@@ -838,8 +864,9 @@ class VideoListScreen(Screen):
     def on_mount(self) -> None:
         """Handle mount event - start auto-refresh timer."""
         self._start_refresh_timer()
-        self._refresh_data()  # Initial data load
         self._update_header()
+        # Initial data load - use a small delay to ensure DataTable is ready
+        self.call_later(self._refresh_data)
     
     def on_unmount(self) -> None:
         """Handle unmount event - stop timer."""
@@ -866,10 +893,15 @@ class VideoListScreen(Screen):
     
     def _refresh_data(self) -> None:
         """Refresh the video list data."""
-        video_list = self.query_one(VideoListWidget)
-        video_list.refresh_data()
-        self._update_header()
-        self._update_speed_graph()
+        try:
+            video_list = self.query_one(VideoListWidget)
+            video_list.refresh_data()
+            self._update_header()
+            self._update_speed_graph()
+        except Exception as e:
+            # Log error but don't crash
+            import logging
+            logging.getLogger(__name__).error(f"Error refreshing data: {e}")
     
     def _update_header(self) -> None:
         """Update the header with current stats."""
@@ -900,13 +932,16 @@ class VideoListScreen(Screen):
         """Toggle speed graph visibility with 'g' key."""
         self.show_graph = not self.show_graph
         
-        # Update graph container visibility
+        # Update graph visibility
         try:
-            graph_container = self.query_one("#graph-container")
+            graph = self.query_one("#speed-graph", SpeedGraphComponent)
             if self.show_graph:
-                graph_container.add_class("visible")
+                graph.add_class("visible")
+                # Update graph data if we have a selection
+                if self._selected_video_id is not None:
+                    graph.set_video(self._selected_video_id, self._selected_stage)
             else:
-                graph_container.remove_class("visible")
+                graph.remove_class("visible")
         except Exception:
             pass
         
@@ -916,10 +951,6 @@ class VideoListScreen(Screen):
             footer.set_show_graph(self.show_graph)
         except Exception:
             pass
-        
-        # Update graph if now visible and we have a selection
-        if self.show_graph and self._selected_video_id is not None:
-            self._update_speed_graph()
         
         status = "visible" if self.show_graph else "hidden"
         self.app.notify(f"Speed graph {status}", timeout=1.5)
@@ -962,20 +993,33 @@ class VideoListScreen(Screen):
         Args:
             video_id: ID of the video to show details for
         """
-        # Import here to avoid circular imports
-        from haven_tui.ui.views.video_detail import VideoDetailScreen
-        
         # Check if there's a custom callback
         if hasattr(self, 'on_show_details_callback') and self.on_show_details_callback:
             self.on_show_details_callback(video_id)
         else:
-            # Default behavior: show a notification that detail view is available
-            # The actual navigation should be handled by the app using the callback
-            self.app.notify(
-                f"Detail view for video {video_id} - "
-                "Use on_show_details_callback to customize navigation",
-                timeout=3.0
-            )
+            # Default behavior: push video detail screen
+            try:
+                from haven_tui.ui.views.video_detail import VideoDetailScreen
+                
+                # Get repositories from the app if available
+                job_repo = getattr(self.app, 'job_history_repo', None)
+                snapshot_repo = getattr(self.app, 'snapshot_repo', None)
+                
+                # Create and push the detail screen with repositories
+                detail_screen = VideoDetailScreen(
+                    video_id=video_id,
+                    job_repo=job_repo,
+                    snapshot_repo=snapshot_repo,
+                )
+                self.app.push_screen(detail_screen)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self.app.notify(
+                    f"Could not open detail view: {e}",
+                    severity="error",
+                    timeout=3.0
+                )
     
     def action_filter(self) -> None:
         """Open filter dialog or cycle through filter states."""
@@ -1084,6 +1128,8 @@ class VideoListScreen(Screen):
                 "  a - Toggle auto-refresh\n"
                 "  d - View details\n"
                 "  g - Toggle speed graph\n"
+                "  v - View analytics dashboard\n"
+                "  l - View event log\n"
                 "  f - Filter dialog\n"
                 "  c - Toggle completed videos\n"
                 "  e - Toggle errors only\n"
@@ -1095,6 +1141,14 @@ class VideoListScreen(Screen):
                 "  ? - Show this help"
             )
         self.app.notify(help_text, title="Help", timeout=10.0)
+    
+    def action_analytics(self) -> None:
+        """Navigate to analytics dashboard."""
+        self.app.push_screen("analytics")
+    
+    def action_event_log(self) -> None:
+        """Navigate to event log."""
+        self.app.push_screen("event_log")
     
     def action_toggle_select(self) -> None:
         """Toggle selection of current video."""

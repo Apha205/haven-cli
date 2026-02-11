@@ -10,8 +10,10 @@ import time
 from typing import List, Optional, Any
 from dataclasses import dataclass
 
+from rich.text import Text
 from textual.widgets import Static
 from textual.reactive import reactive
+from textual.visual import visualize
 
 from haven_tui.data.repositories import SpeedHistoryRepository
 from haven_tui.models.video_view import PipelineStage
@@ -131,7 +133,7 @@ class SpeedGraphComponent(Static):
         if self.video_id is None or self.speed_history_repo is None:
             self._speed_data = []
             self._update_stats()
-            self.update(self._render_empty())
+            self.update(self._get_empty_text())
             return
         
         # Get speed history from database (last N minutes to ensure coverage)
@@ -157,7 +159,7 @@ class SpeedGraphComponent(Static):
                 ))
         
         self._update_stats()
-        self.update(self._render())
+        self.update(self._get_text())
     
     def _update_stats(self) -> None:
         """Update speed statistics from current data."""
@@ -173,8 +175,8 @@ class SpeedGraphComponent(Static):
             min_val=min(speeds) if speeds else 0,
         )
     
-    def _render_empty(self) -> str:
-        """Render empty state when no data available."""
+    def _get_empty_text(self) -> Text:
+        """Get empty state text when no data available."""
         lines = [
             "┌" + "─" * (self.graph_width - 2) + "┐",
             "│" + "Speed History".center(self.graph_width - 2) + "│",
@@ -191,12 +193,12 @@ class SpeedGraphComponent(Static):
             lines.append("│" + " " * (self.graph_width - 2) + "│")
         
         lines.append("└" + "─" * (self.graph_width - 2) + "┘")
-        return "\n".join(lines)
+        return Text("\n".join(lines))
     
-    def _render(self) -> str:
-        """Render the speed graph."""
+    def _get_text(self) -> Text:
+        """Get the speed graph text."""
         if not self._speed_data:
-            return self._render_empty()
+            return self._get_empty_text()
         
         lines = []
         
@@ -213,7 +215,7 @@ class SpeedGraphComponent(Static):
         lines.append("")
         lines.append(self._render_stats())
         
-        return "\n".join(lines)
+        return Text("\n".join(lines))
     
     def _render_graph_lines(self) -> List[str]:
         """Render the graph using plotille or fallback."""
@@ -336,23 +338,23 @@ class SpeedGraphComponent(Static):
         size /= 1024
         return f"{size:.1f} GiB/s"
     
-    def render_multi_stage(
+    def get_multi_stage_text(
         self,
         stages: Optional[List[str]] = None,
-    ) -> str:
-        """Render multi-stage speed comparison graph.
+    ) -> Text:
+        """Get multi-stage speed comparison graph text.
         
         Args:
             stages: List of stages to display (default: download, encrypt, upload)
             
         Returns:
-            Rendered graph string
+            Rendered graph as Rich Text
         """
         if stages is None:
             stages = ["download", "encrypt", "upload"]
         
         if self.video_id is None or self.speed_history_repo is None:
-            return self._render_empty()
+            return self._get_empty_text()
         
         minutes = max(1, (self.history_seconds // 60) + 1)
         now = time.time()
@@ -381,7 +383,7 @@ class SpeedGraphComponent(Static):
                 stage_data[stage] = points
         
         if not stage_data:
-            return self._render_empty()
+            return self._get_empty_text()
         
         lines = []
         lines.append("[bold]Multi-Stage Speed History[/bold]")
@@ -398,7 +400,7 @@ class SpeedGraphComponent(Static):
         lines.append("")
         lines.append(self._render_stage_timeline(stage_data))
         
-        return "\n".join(lines)
+        return Text("\n".join(lines))
     
     def _render_multi_stage_plotille(
         self,

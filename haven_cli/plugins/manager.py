@@ -405,7 +405,14 @@ def get_plugin_manager() -> PluginManager:
     """
     global _default_manager
     if _default_manager is None:
-        _default_manager = PluginManager()
+        # Load config and pass to plugin manager
+        from haven_cli.config import get_config
+        config = get_config()
+        # Convert to dict format expected by plugins
+        config_dict = {
+            "plugins": config.plugins,
+        }
+        _default_manager = PluginManager(config=config_dict)
     return _default_manager
 
 

@@ -236,3 +236,61 @@ class TestBitTorrentPlugin:
         assert config["max_concurrent_downloads"] == 5
         assert "video_extensions" in config
         assert "sources" in config
+
+
+class TestBitTorrentSizeLimits:
+    """Tests for BitTorrent size limit functionality."""
+    
+    def test_default_size_limits(self):
+        """Test default size limit values."""
+        config = BitTorrentConfig()
+        
+        # Default min is 10 MB
+        assert config.min_video_size == 10 * 1024 * 1024
+        # Default max is 50 GB
+        assert config.max_video_size == 50 * 1024 * 1024 * 1024
+    
+    def test_custom_size_limits(self):
+        """Test custom size limit configuration."""
+        config = BitTorrentConfig.from_dict({
+            "min_video_size": 100 * 1024 * 1024,  # 100 MB
+            "max_video_size": 10 * 1024 * 1024 * 1024,  # 10 GB
+        })
+        
+        assert config.min_video_size == 100 * 1024 * 1024
+        assert config.max_video_size == 10 * 1024 * 1024 * 1024
+    
+    def test_size_limits_from_plugin_config(self):
+        """Test that size limits are properly loaded from plugin config."""
+        # The config structure follows: plugins.plugin_settings.bittorrent
+        plugin = BitTorrentPlugin(config={
+            "plugins": {
+                "plugin_settings": {
+                    "bittorrent": {
+                        "min_video_size": 50 * 1024 * 1024,  # 50 MB
+                        "max_video_size": 20 * 1024 * 1024 * 1024,  # 20 GB
+                    }
+                }
+            }
+        })
+        
+        assert plugin._bt_config.min_video_size == 50 * 1024 * 1024
+        assert plugin._bt_config.max_video_size == 20 * 1024 * 1024 * 1024
+    
+    def test_size_limit_validation_reasonable_values(self):
+        """Test that reasonable size limit values are accepted."""
+        # Small limits
+        config1 = BitTorrentConfig.from_dict({
+            "min_video_size": 1024,  # 1 KB
+            "max_video_size": 1024 * 1024,  # 1 MB
+        })
+        assert config1.min_video_size == 1024
+        assert config1.max_video_size == 1024 * 1024
+        
+        # Large limits
+        config2 = BitTorrentConfig.from_dict({
+            "min_video_size": 1024 * 1024 * 1024,  # 1 GB
+            "max_video_size": 100 * 1024 * 1024 * 1024,  # 100 GB
+        })
+        assert config2.min_video_size == 1024 * 1024 * 1024
+        assert config2.max_video_size == 100 * 1024 * 1024 * 1024

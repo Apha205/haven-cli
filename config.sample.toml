@@ -120,6 +120,27 @@ disabled_plugins = []
 # quality = "best"
 # format = "mp4"
 
+# BitTorrent plugin settings
+# [plugins.settings.bittorrent]
+# download_dir = "downloads/bittorrent"  # Directory to save downloaded files
+# max_concurrent_downloads = 3           # Maximum concurrent torrent downloads
+# max_download_speed = 0                 # Maximum download speed in bytes/sec (0 = unlimited)
+# max_upload_speed = 0                   # Maximum upload speed in bytes/sec (0 = unlimited)
+# seed_ratio = 0.0                       # Minimum seed ratio before stopping (0 = don't stop)
+# seed_time = 0                          # Minimum seed time in seconds (0 = don't stop)
+# video_extensions = [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v"]
+# min_video_size = 10485760              # Minimum video file size in bytes (default: 10 MB)
+# max_video_size = 53687091200           # Maximum video file size in bytes (default: 50 GB)
+#                                        # Files larger than this will be skipped and NOT downloaded
+# max_download_time = 0                  # Maximum time to wait for download in seconds (0 = unlimited)
+# stall_timeout = 300                    # Time with no progress before considering stalled (seconds)
+# min_progress_percent = 0.0             # Minimum progress to accept as partial success
+# allow_partial_downloads = false        # Whether to allow returning partial downloads
+# enable_background_downloads = true     # Whether to enable background download tracking
+# metadata_timeout = 120                 # Timeout for fetching torrent metadata (seconds)
+# metadata_retries = 5                   # Number of retry attempts for metadata fetch
+# max_connections = 50                   # Max peer connections per torrent
+
 # ============================================================================
 # JavaScript Runtime Configuration
 # ============================================================================

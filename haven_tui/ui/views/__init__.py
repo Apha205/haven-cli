@@ -31,6 +31,9 @@ from haven_tui.ui.views.event_log import (
     EventTypeFilterModal,
     SearchModal,
     ExportModal,
+    VideoLogsScreen,
+    VideoLogsHeader,
+    VideoLogsFooter,
 )
 
 __all__ = [
@@ -56,4 +59,7 @@ __all__ = [
     "EventTypeFilterModal",
     "SearchModal",
     "ExportModal",
+    "VideoLogsScreen",
+    "VideoLogsHeader",
+    "VideoLogsFooter",
 ]

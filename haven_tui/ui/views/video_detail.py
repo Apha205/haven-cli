@@ -19,6 +19,7 @@ from textual.binding import Binding
 from haven_tui.data.repositories import JobHistoryRepository, PipelineSnapshotRepository
 from haven_tui.models.video_view import VideoView, PipelineStage
 from haven_tui.ui.components.speed_graph import SpeedGraphComponent
+from haven_tui.ui.views.event_log import VideoLogsScreen
 from haven_cli.database.models import (
     Download, EncryptionJob, UploadJob, SyncJob, AnalysisJob
 )
@@ -64,12 +65,16 @@ class PipelineStageWidget(Static):
         super().__init__(**kwargs)
         self.stage_info = stage_info
     
-    def compose(self) -> None:
+    def compose(self):
         """Compose the stage display."""
-        self.update(self._render())
+        return []
     
-    def _render(self) -> str:
-        """Render the stage line."""
+    def on_mount(self) -> None:
+        """Update display on mount."""
+        self._update_display()
+    
+    def _update_display(self) -> None:
+        """Update the stage display."""
         info = self.stage_info
         
         # Get style class based on status
@@ -85,7 +90,7 @@ class PipelineStageWidget(Static):
             f" {info.detail}[/{style_class}]"
         )
         
-        return line
+        self.update(line)
     
     def _get_style_class(self, status: str) -> str:
         """Get CSS style class for status."""
@@ -140,6 +145,14 @@ class PipelineProgressWidget(Static):
         super().__init__(**kwargs)
         self._stages: List[StageDisplayInfo] = []
     
+    def compose(self):
+        """Compose the widget - Static widgets don't yield children."""
+        return []
+    
+    def on_mount(self) -> None:
+        """Update display on mount."""
+        self._update_display()
+    
     def set_stages(self, stages: List[StageDisplayInfo]) -> None:
         """Set the stages to display.
         
@@ -147,14 +160,17 @@ class PipelineProgressWidget(Static):
             stages: List of stage display info
         """
         self._stages = stages
-        self.update(self._render())
+        self._update_display()
     
-    def _render(self) -> str:
-        """Render all pipeline stages."""
+    def _update_display(self) -> None:
+        """Update the pipeline stages display."""
         if not self._stages:
-            return "[dim]No pipeline data available[/dim]"
+            self.update("[dim]No pipeline data available[/dim]")
+            return
         
-        lines = ["[bold]Pipeline Progress[/bold]", ""]
+        lines = []
+        lines.append("[bold]Pipeline Progress[/bold]")
+        lines.append("")
         
         for stage in self._stages:
             progress_bar = self._format_progress_bar(stage.progress, 20)
@@ -167,7 +183,7 @@ class PipelineProgressWidget(Static):
             )
             lines.append(line)
         
-        return "\n".join(lines)
+        self.update("\n".join(lines))
     
     def _get_style_class(self, status: str) -> str:
         """Get CSS style class for status."""
@@ -222,6 +238,14 @@ class VideoInfoWidget(Static):
         super().__init__(**kwargs)
         self._video: Optional[VideoView] = None
     
+    def compose(self):
+        """Compose the widget - Static widgets don't yield children."""
+        return []
+    
+    def on_mount(self) -> None:
+        """Update display on mount."""
+        self._update_display()
+    
     def set_video(self, video: VideoView) -> None:
         """Set the video to display.
         
@@ -229,15 +253,16 @@ class VideoInfoWidget(Static):
             video: Video view model
         """
         self._video = video
-        self.update(self._render())
+        self._update_display()
     
-    def _render(self) -> str:
-        """Render video information."""
+    def _update_display(self) -> None:
+        """Update the video information display."""
         if self._video is None:
-            return "[dim]No video selected[/dim]"
+            self.update("[dim]No video selected[/dim]")
+            return
         
         lines = []
-        lines.append(f"[bold]Video Information[/bold]")
+        lines.append("[bold]Video Information[/bold]")
         lines.append("")
         lines.append(f"[dim]Title:[/dim]     {self._truncate_text(self._video.title, 50)}")
         lines.append(f"[dim]Source:[/dim]    {self._truncate_text(self._video.source_path, 50)}")
@@ -245,7 +270,7 @@ class VideoInfoWidget(Static):
         lines.append(f"[dim]Plugin:[/dim]    {self._video.plugin}")
         lines.append(f"[dim]Status:[/dim]    {self._video.overall_status}")
         
-        return "\n".join(lines)
+        self.update("\n".join(lines))
     
     def _truncate_text(self, text: str, max_length: int) -> str:
         """Truncate text to fit display."""
@@ -280,6 +305,14 @@ class ResultsWidget(Static):
         self._analysis_complete: bool = False
         self._tx_hash: Optional[str] = None
     
+    def compose(self):
+        """Compose the widget - Static widgets don't yield children."""
+        return []
+    
+    def on_mount(self) -> None:
+        """Update display on mount."""
+        self._update_display()
+    
     def set_results(
         self,
         cid: Optional[str] = None,
@@ -299,11 +332,13 @@ class ResultsWidget(Static):
         self._is_encrypted = is_encrypted
         self._analysis_complete = analysis_complete
         self._tx_hash = tx_hash
-        self.update(self._render())
+        self._update_display()
     
-    def _render(self) -> str:
-        """Render results section."""
-        lines = ["[bold]Results[/bold]", ""]
+    def _update_display(self) -> None:
+        """Update the results display."""
+        lines = []
+        lines.append("[bold]Results[/bold]")
+        lines.append("")
         
         if self._cid:
             # Truncate CID for display
@@ -323,7 +358,7 @@ class ResultsWidget(Static):
         if len(lines) == 2:  # Only header lines
             lines.append("[dim]No results yet[/dim]")
         
-        return "\n".join(lines)
+        self.update("\n".join(lines))
 
 
 class VideoDetailHeader(Static):
@@ -343,6 +378,14 @@ class VideoDetailHeader(Static):
         """Initialize the header."""
         super().__init__(**kwargs)
         self._title: str = "Video Details"
+    
+    def compose(self):
+        """Compose the widget - Static widgets don't yield children."""
+        return []
+    
+    def on_mount(self) -> None:
+        """Update display on mount."""
+        self.update(self._title)
     
     def set_title(self, title: str) -> None:
         """Set the header title.
@@ -372,11 +415,12 @@ class VideoDetailFooter(Static):
     }
     """
     
-    def compose(self) -> None:
+    def compose(self):
         """Set up the footer content."""
         self.update(
             "[b] Back  [r] Retry  [l] Logs  [g] Graph  [q] Quit"
         )
+        return []
 
 
 class VideoDetailScreen(Screen):
@@ -809,7 +853,18 @@ class VideoDetailScreen(Screen):
     
     def action_logs(self) -> None:
         """View logs for this video."""
-        self.app.notify(f"View logs for video {self.video_id} (not implemented)", timeout=3.0)
+        # Get video title if available
+        video_title = ""
+        if self._snapshot_repo:
+            video = self._snapshot_repo.get_video_summary(self.video_id)
+            if video:
+                video_title = video.title
+        
+        # Push the video logs screen
+        self.app.push_screen(VideoLogsScreen(
+            video_id=self.video_id,
+            video_title=video_title,
+        ))
     
     def action_graph(self) -> None:
         """Toggle speed graph display."""

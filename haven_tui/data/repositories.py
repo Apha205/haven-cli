@@ -14,7 +14,8 @@ from sqlalchemy import func, case, desc, literal
 
 from haven_cli.database.models import (
     Video, Download, EncryptionJob, UploadJob,
-    SyncJob, AnalysisJob, PipelineSnapshot, SpeedHistory
+    SyncJob, AnalysisJob, PipelineSnapshot, SpeedHistory,
+    TorrentDownload,
 )
 from haven_tui.models.video_view import VideoView, PipelineStage, StageInfo, StageStatus
 
@@ -150,6 +151,106 @@ class PipelineSnapshotRepository:
 
         snapshots = query.all()
         return [self._snapshot_to_view(s) for s in snapshots]
+
+    def get_active_torrents_without_video(self, limit: int = 100) -> List[VideoView]:
+        """Get active torrent downloads that don't have corresponding Video records.
+
+        This method finds torrents in the torrent_downloads table that are actively
+        downloading (status = 'downloading', 'paused', or 'checking') but don't have
+        a matching entry in the videos table via output_path lookup.
+
+        Args:
+            limit: Maximum number of results
+
+        Returns:
+            List of VideoView objects representing torrents without video records.
+            These entries use negative IDs to distinguish them from regular videos.
+        """
+        # Query active torrents
+        active_torrents = self.session.query(TorrentDownload).filter(
+            TorrentDownload.status.in_([
+                "downloading", "paused", "checking", "failed"
+            ])
+        ).order_by(
+            desc(TorrentDownload.started_at)
+        ).limit(limit).all()
+
+        # Filter out torrents that have associated videos
+        orphan_torrents = []
+        for torrent in active_torrents:
+            # Check if this torrent has an associated video
+            has_video = False
+            if torrent.output_path:
+                video = self.session.query(Video).filter_by(
+                    source_path=torrent.output_path
+                ).first()
+                if video:
+                    has_video = True
+            
+            # Also check by source_id if it looks like "video:{id}"
+            if not has_video and torrent.source_id and torrent.source_id.startswith("video:"):
+                try:
+                    video_id = int(torrent.source_id.split(":")[1])
+                    video = self.session.query(Video).filter_by(id=video_id).first()
+                    if video:
+                        has_video = True
+                except (ValueError, IndexError):
+                    pass
+            
+            if not has_video:
+                orphan_torrents.append(torrent)
+
+        # Convert to VideoView objects
+        return [self._torrent_to_view(t) for t in orphan_torrents]
+
+    def _torrent_to_view(self, torrent: TorrentDownload) -> VideoView:
+        """Convert a TorrentDownload to a VideoView.
+
+        This creates a placeholder VideoView for torrents that don't have
+        associated Video records yet. The ID is negated to distinguish
+        these from regular videos.
+
+        Args:
+            torrent: TorrentDownload model instance
+
+        Returns:
+            VideoView object representing the torrent download
+        """
+        # Map torrent status to overall status
+        status_map = {
+            "downloading": "active",
+            "paused": "pending",
+            "checking": "active",
+            "completed": "completed",
+            "failed": "failed",
+            "stalled": "failed",
+        }
+        overall_status = status_map.get(torrent.status, "pending")
+
+        # Calculate ETA
+        eta = None
+        if torrent.download_rate and torrent.download_rate > 0:
+            remaining = torrent.total_size - torrent.downloaded_size
+            eta = int(remaining / torrent.download_rate)
+
+        # Use negative ID to indicate torrent-only entry (not a real video)
+        # This allows the TUI to distinguish and handle them appropriately
+        torrent_id = -torrent.id
+
+        return VideoView(
+            id=torrent_id,
+            title=torrent.title or f"Torrent {torrent.infohash[:16]}...",
+            source_path=torrent.output_path or "",
+            current_stage=PipelineStage.DOWNLOAD,
+            stage_progress=torrent.progress * 100,
+            stage_speed=torrent.download_rate,
+            stage_eta=eta,
+            overall_status=overall_status,
+            has_error=torrent.status == "failed" or torrent.status == "stalled",
+            error_message=torrent.error_message,
+            file_size=torrent.total_size,
+            plugin="bittorrent",
+        )
 
     def get_aggregate_stats(self) -> Dict[str, Any]:
         """Get stats for TUI header bar.

@@ -608,9 +608,10 @@ class PipelineInterface:
         """Get videos currently in the pipeline.
         
         Returns videos that are pending, active, or failed.
+        Also includes torrent downloads that don't have Video records yet.
         
         Returns:
-            List of active videos
+            List of active videos (or Video-like objects for torrent-only entries)
         """
         session = self._ensure_session()
         repo = VideoRepository(session)
@@ -626,12 +627,52 @@ class PipelineInterface:
             PipelineSnapshot.overall_status.in_(["active", "pending", "failed"])
         ).all()
         
+        videos = []
         if active_ids:
             video_ids = [r[0] for r in active_ids]
-            return session.query(Video).filter(Video.id.in_(video_ids)).all()
+            videos = session.query(Video).filter(Video.id.in_(video_ids)).all()
         
-        # Fallback: return recent videos that might be active
-        return repo.get_all(limit=100)
+        # Also get orphaned torrents (torrents without Video records)
+        # These are represented as Video-like objects with negative IDs
+        from haven_tui.data.repositories import PipelineSnapshotRepository
+        snapshot_repo = PipelineSnapshotRepository(session)
+        orphan_views = snapshot_repo.get_active_torrents_without_video()
+        
+        # Convert VideoView objects to placeholder Video objects
+        # This maintains backwards compatibility with existing code
+        for view in orphan_views:
+            # Create a minimal Video-like object
+            placeholder = self._create_torrent_placeholder(view)
+            if placeholder:
+                videos.append(placeholder)
+        
+        return videos
+    
+    def _create_torrent_placeholder(self, view) -> Optional[Video]:
+        """Create a placeholder Video object from a VideoView for orphaned torrents.
+        
+        This creates a minimal Video object that can be used by the TUI
+        to display torrents that don't have Video records yet.
+        
+        Args:
+            view: VideoView object representing an orphaned torrent
+            
+        Returns:
+            A Video-like object with the necessary attributes for TUI display
+        """
+        # Create a minimal Video object
+        video = Video(
+            id=view.id,  # Negative ID to indicate placeholder
+            title=view.title,
+            source_path=view.source_path,
+            file_size=view.file_size,
+            plugin_name=view.plugin,
+        )
+        
+        # Store the view data for later use
+        video._torrent_view = view
+        
+        return video
     
     def get_video_detail(self, video_id: int) -> Optional[Video]:
         """Get detailed information about a specific video.

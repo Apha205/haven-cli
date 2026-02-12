@@ -267,7 +267,8 @@ class StateManager:
         
         This method should be called before using the state manager.
         It loads all active videos from the database and subscribes to
-        pipeline events.
+        pipeline events. Also loads orphaned torrents (torrents without
+        Video records) so they appear in the TUI.
         """
         if self._initialized:
             logger.warning("StateManager already initialized")
@@ -284,6 +285,25 @@ class StateManager:
             logger.debug(f"Loaded {len(active_videos)} active videos")
         except Exception as e:
             logger.error(f"Failed to load active videos: {e}")
+        
+        # Load orphaned torrents (torrents without Video records)
+        try:
+            from haven_tui.data.repositories import PipelineSnapshotRepository
+            from haven_cli.database.connection import get_db_session
+            
+            session = get_db_session()
+            if hasattr(session, '__enter__'):
+                with session as db_session:
+                    snapshot_repo = PipelineSnapshotRepository(db_session)
+                    orphan_views = snapshot_repo.get_active_torrents_without_video()
+                    
+                    async with self._lock:
+                        for view in orphan_views:
+                            await self._load_torrent_view(view)
+                    
+                    logger.debug(f"Loaded {len(orphan_views)} orphaned torrents")
+        except Exception as e:
+            logger.error(f"Failed to load orphaned torrents: {e}")
         
         # Setup event handlers
         self._setup_event_handlers()
@@ -334,6 +354,11 @@ class StateManager:
             This method does NOT acquire the lock. Callers must ensure proper
             locking when calling this method from within locked contexts.
         """
+        # Handle negative IDs (torrent-only placeholders)
+        if video_id < 0:
+            # This is a torrent placeholder - load from the torrent view
+            return await self._load_torrent_by_id(video_id)
+        
         try:
             video = self._pipeline.get_video_detail(video_id)
             if not video:
@@ -395,6 +420,102 @@ class StateManager:
             
         except Exception as e:
             logger.error(f"Error loading video {video_id}: {e}")
+            return None
+    
+    async def _load_torrent_view(self, view) -> Optional[VideoState]:
+        """Load a torrent view (orphaned torrent) into state.
+        
+        Creates a VideoState for a torrent that doesn't have a Video record.
+        These torrents use negative IDs to distinguish them from real videos.
+        
+        Args:
+            view: VideoView object representing an orphaned torrent
+            
+        Returns:
+            VideoState if created, None otherwise
+            
+        Note:
+            This method does NOT acquire the lock. Callers must ensure proper
+            locking when calling this method from within locked contexts.
+        """
+        try:
+            # Map overall status
+            status_map = {
+                "active": "active",
+                "pending": "pending",
+                "completed": "completed",
+                "failed": "failed",
+            }
+            overall_status = status_map.get(view.overall_status, "pending")
+            
+            # Map stage string to status
+            stage_status = "pending"
+            if overall_status == "active":
+                stage_status = "active"
+            elif overall_status == "failed":
+                stage_status = "failed"
+            
+            # Create VideoState for the torrent
+            state = VideoState(
+                id=view.id,  # Negative ID
+                title=view.title or f"Torrent {abs(view.id)}",
+                file_size=view.file_size or 0,
+                plugin="bittorrent",
+                download_status=stage_status,
+                download_progress=view.stage_progress,
+                download_speed=float(view.stage_speed),
+                download_eta=view.stage_eta,
+                overall_status=overall_status,
+                current_stage="download",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            
+            self._state[view.id] = state
+            
+            return state
+            
+        except Exception as e:
+            logger.error(f"Error loading torrent view {view.id}: {e}")
+            return None
+    
+    async def _load_torrent_by_id(self, video_id: int) -> Optional[VideoState]:
+        """Load a torrent by its negative ID.
+        
+        Args:
+            video_id: Negative ID representing a torrent (-torrent_id)
+            
+        Returns:
+            VideoState if found, None otherwise
+        """
+        try:
+            from haven_tui.data.repositories import PipelineSnapshotRepository
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.models import TorrentDownload
+            
+            # Convert negative ID to torrent ID
+            torrent_id = abs(video_id)
+            
+            session = get_db_session()
+            if hasattr(session, '__enter__'):
+                with session as db_session:
+                    # Get the torrent directly
+                    torrent = db_session.query(TorrentDownload).filter_by(
+                        id=torrent_id
+                    ).first()
+                    
+                    if not torrent:
+                        return None
+                    
+                    # Convert to view and load
+                    snapshot_repo = PipelineSnapshotRepository(db_session)
+                    view = snapshot_repo._torrent_to_view(torrent)
+                    return await self._load_torrent_view(view)
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error loading torrent by ID {video_id}: {e}")
             return None
     
     def _setup_event_handlers(self) -> None:
@@ -525,9 +646,16 @@ class StateManager:
         if not video_id:
             return
         
+        # Handle synthetic IDs for orphaned torrents (negative IDs)
+        is_orphaned_torrent = video_id < 0
+        
         # Load video first if needed (outside lock to avoid reentrancy issues)
         if video_id not in self._state:
-            await self._load_video(video_id)
+            if is_orphaned_torrent:
+                # For orphaned torrents, create state from the event data
+                await self._create_torrent_state_from_event(video_id, payload)
+            else:
+                await self._load_video(video_id)
         
         if video_id not in self._state:
             return
@@ -563,6 +691,48 @@ class StateManager:
             self._notify_change(video_id, 'download_speed', state.download_speed)
         if 'progress' in payload and state.download_progress != old_progress:
             self._notify_change(video_id, 'download_progress', state.download_progress)
+    
+    async def _create_torrent_state_from_event(self, video_id: int, payload: Dict[str, Any]) -> Optional[VideoState]:
+        """Create VideoState for an orphaned torrent from event data.
+        
+        This is used when progress events arrive for torrents that don't have
+        Video records in the database yet.
+        
+        Args:
+            video_id: Synthetic negative video ID
+            payload: Event payload with torrent data
+            
+        Returns:
+            VideoState if created, None otherwise
+        """
+        try:
+            # Create VideoState from event payload
+            state = VideoState(
+                id=video_id,
+                title=payload.get('video_path', f"Torrent {abs(video_id)}"),
+                file_size=payload.get('total_bytes', 0),
+                plugin="bittorrent",
+                download_status="active",
+                download_progress=payload.get('progress_percent', 0.0),
+                download_speed=float(payload.get('download_rate', 0)),
+                download_eta=payload.get('eta_seconds'),
+                overall_status="active",
+                current_stage="download",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            
+            # Set started_at
+            state.started_at = datetime.now(timezone.utc)
+            
+            self._state[video_id] = state
+            logger.debug(f"Created state for orphaned torrent: {state.title}")
+            
+            return state
+            
+        except Exception as e:
+            logger.error(f"Error creating torrent state from event: {e}")
+            return None
     
     async def _on_upload_progress(self, event: Event) -> None:
         """Handle upload progress events.

@@ -356,15 +356,30 @@ class DownloadProgressTracker:
     def _emit_progress_event(self, progress: DownloadProgress) -> None:
         """Emit DOWNLOAD_PROGRESS event.
         
+        For torrents without video_id, uses a negative ID based on the
+        torrent's infohash to allow state tracking in the TUI.
+        
         Args:
             progress: DownloadProgress to emit event for
         """
         try:
+            # Determine video_id for event
+            video_id = progress.video_id
+            
+            # For torrents without video_id, create a synthetic ID from source_id
+            # This allows the TUI to track orphaned torrents
+            if video_id is None and progress.source_type == "bittorrent":
+                # Use a hash of the infohash to create a consistent negative ID
+                # This ensures the same torrent always gets the same synthetic ID
+                import hashlib
+                hash_int = int(hashlib.md5(progress.source_id.encode()).hexdigest()[:8], 16)
+                video_id = -(hash_int % 1000000000)  # Negative ID to indicate synthetic
+            
             event = Event(
                 EventType.DOWNLOAD_PROGRESS,
                 payload={
                     "source_id": progress.source_id,
-                    "video_id": progress.video_id,
+                    "video_id": video_id,
                     "video_path": progress.title,
                     "source_type": progress.source_type,
                     "progress_percent": progress.progress_pct,

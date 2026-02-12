@@ -8,10 +8,12 @@ This step is the entry point for videos into the pipeline. It:
 5. Checks for duplicates based on pHash
 """
 
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from haven_cli.database.connection import get_db_session
+from haven_cli.database.models import Download
 from haven_cli.database.repositories import VideoRepository
 from haven_cli.media import detect_mime_type, extract_video_metadata
 from haven_cli.media.exceptions import VideoMetadataError
@@ -154,7 +156,7 @@ class IngestStep(PipelineStep):
             })
             
             # Save to database and get video ID
-            video_id = await self._save_to_database(video_metadata)
+            video_id = await self._save_to_database(video_metadata, context)
             
             # Store video ID in context for later steps
             if video_id > 0:
@@ -226,11 +228,12 @@ class IngestStep(PipelineStep):
             # Log error but return False to allow processing
             return False
     
-    async def _save_to_database(self, metadata: VideoMetadata) -> int:
+    async def _save_to_database(self, metadata: VideoMetadata, context: PipelineContext) -> int:
         """Save video metadata to database.
         
         Args:
             metadata: Video metadata to save
+            context: Pipeline context with source information
             
         Returns:
             Database ID of the created/updated video record
@@ -265,6 +268,10 @@ class IngestStep(PipelineStep):
                         mime_type=metadata.mime_type,
                         phash=metadata.phash,
                     )
+                    
+                    # Create completed download record if this video came from a plugin
+                    await self._create_completed_download_record(session, video.id, metadata, context)
+                    
                     return video.id
         except Exception as e:
             # If database save fails, don't block ingestion
@@ -272,6 +279,93 @@ class IngestStep(PipelineStep):
             # Return -1 to indicate error
             logger.error(f"Failed to save video to database: {e}")
             return -1
+    
+    async def _create_completed_download_record(
+        self,
+        session,
+        video_id: int,
+        metadata: VideoMetadata,
+        context: PipelineContext,
+    ) -> Optional[Download]:
+        """Create a completed download record for plugin-downloaded content.
+        
+        When a video is downloaded by a plugin (YouTube, BitTorrent, etc.) and then
+        ingested into the pipeline, we need to create a Download record with status
+        "completed" so the TUI correctly shows download as complete rather than pending.
+        
+        Args:
+            session: Database session
+            video_id: The newly created video ID
+            metadata: Video metadata
+            context: Pipeline context with source information
+            
+        Returns:
+            Created Download record or None if not applicable
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Check if this video came from a plugin download
+        plugin_name = context.options.get("plugin_name")
+        source_uri = context.options.get("source_uri")
+        
+        # Only create download record if we have plugin information indicating
+        # this file was downloaded (not a local file)
+        if not plugin_name:
+            return None
+        
+        try:
+            # Determine source type from plugin name
+            source_type = self._get_source_type(plugin_name)
+            
+            # Create completed download record
+            download = Download(
+                video_id=video_id,
+                source_type=source_type,
+                status="completed",
+                progress_percent=100.0,
+                bytes_downloaded=metadata.file_size,
+                bytes_total=metadata.file_size,
+                started_at=datetime.now(timezone.utc),
+                completed_at=datetime.now(timezone.utc),
+                source_metadata={
+                    "plugin_name": plugin_name,
+                    "source_uri": source_uri,
+                    "source_id": context.options.get("source_id"),
+                }
+            )
+            session.add(download)
+            session.commit()
+            
+            logger.debug(
+                f"Created completed download record for video {video_id} "
+                f"from {plugin_name}"
+            )
+            return download
+            
+        except Exception as e:
+            # Don't fail ingestion if download record creation fails
+            logger.warning(f"Failed to create download record: {e}")
+            return None
+    
+    def _get_source_type(self, plugin_name: str) -> str:
+        """Determine source type from plugin name.
+        
+        Args:
+            plugin_name: Name of the plugin
+            
+        Returns:
+            Source type string for the downloads table
+        """
+        plugin_name_lower = plugin_name.lower()
+        
+        if "bittorrent" in plugin_name_lower or "torrent" in plugin_name_lower:
+            return "torrent"
+        elif "youtube" in plugin_name_lower:
+            return "youtube"
+        else:
+            # Default to plugin name for unknown plugins
+            return plugin_name_lower.replace("plugin", "").strip("_-") or "unknown"
     
     async def on_complete(
         self,

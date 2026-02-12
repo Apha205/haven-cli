@@ -424,10 +424,14 @@ class JobExecutor:
             },
         )
         
-        # Process async - don't wait for completion
-        asyncio.create_task(
+        # Process and wait for completion to properly release scheduler lock
+        task = asyncio.create_task(
             self._process_with_logging(context, job.job_id)
         )
+        try:
+            await task
+        except Exception as e:
+            logger.error(f"Pipeline processing failed for job {job.job_id}: {e}")
     
     async def _process_with_logging(
         self,
@@ -461,28 +465,50 @@ class JobExecutor:
             plugin_name: Name of the plugin that was executed
         """
         try:
-            from haven_cli.database.connection import get_db_session
-            from haven_cli.database.models import JobExecution
-            
-            with get_db_session() as session:
-                execution = JobExecution(
-                    job_id=str(result.job_id),  # Convert UUID to string for SQLite
-                    plugin_name=plugin_name,
-                    started_at=result.started_at,
-                    completed_at=result.completed_at,
-                    success=result.success,
-                    sources_found=result.sources_found,
-                    sources_archived=result.sources_archived,
-                    error=result.error,
-                    execution_metadata={
-                        "executor_version": "1.0.0",
-                    },
-                )
-                session.add(execution)
-                session.commit()
-                logger.debug(f"Saved execution result for job {result.job_id}")
+            # Run blocking database operation in thread pool
+            loop = asyncio.get_event_loop()
+            await asyncio.wait_for(
+                loop.run_in_executor(
+                    None, self._save_execution_sync, result, plugin_name
+                ),
+                timeout=10.0
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout saving execution result for job {result.job_id}")
         except Exception as e:
             logger.error(f"Failed to save execution result: {e}")
+    
+    def _save_execution_sync(
+        self,
+        result: JobExecutionResult,
+        plugin_name: str,
+    ) -> None:
+        """Synchronous version of _save_execution (for thread pool).
+        
+        Args:
+            result: The execution result to save
+            plugin_name: Name of the plugin that was executed
+        """
+        from haven_cli.database.connection import get_db_session
+        from haven_cli.database.models import JobExecution
+        
+        with get_db_session() as session:
+            execution = JobExecution(
+                job_id=str(result.job_id),  # Convert UUID to string for SQLite
+                plugin_name=plugin_name,
+                started_at=result.started_at,
+                completed_at=result.completed_at,
+                success=result.success,
+                sources_found=result.sources_found,
+                sources_archived=result.sources_archived,
+                error=result.error,
+                execution_metadata={
+                    "executor_version": "1.0.0",
+                },
+            )
+            session.add(execution)
+            session.commit()
+            logger.debug(f"Saved execution result for job {result.job_id}")
 
 
 class BatchJobExecutor:

@@ -590,7 +590,13 @@ class VideoDetailScreen(Screen):
         if downloads:
             stages.append(self._create_download_stage(downloads[0]))
         else:
-            stages.append(self._create_pending_stage("download"))
+            # Infer download status from downstream stages
+            # If encryption/analysis/upload has started/completed, download must be complete
+            inferred_status = self._infer_download_status(history)
+            if inferred_status == "completed":
+                stages.append(self._create_inferred_download_stage())
+            else:
+                stages.append(self._create_pending_stage("download"))
         
         # Process analysis stage
         analysis_jobs = history.get('analysis_jobs', [])
@@ -719,6 +725,63 @@ class VideoDetailScreen(Screen):
             symbol="○",
         )
     
+    def _infer_download_status(self, history: Dict[str, List[Any]]) -> str:
+        """Infer download status from downstream stage statuses.
+        
+        If encryption, analysis, upload, or sync has started or completed,
+        we can infer that download must have completed (since download is
+        the first stage in the pipeline).
+        
+        Args:
+            history: Pipeline history dictionary with all job types
+            
+        Returns:
+            "completed" if download can be inferred as complete, "pending" otherwise
+        """
+        # Check encryption jobs
+        encryption_jobs = history.get('encryption_jobs', [])
+        if encryption_jobs:
+            enc_status = encryption_jobs[0].status
+            if enc_status in ("encrypting", "completed", "active"):
+                return "completed"
+        
+        # Check analysis jobs
+        analysis_jobs = history.get('analysis_jobs', [])
+        if analysis_jobs:
+            analysis_status = analysis_jobs[0].status
+            if analysis_status in ("analyzing", "completed", "active"):
+                return "completed"
+        
+        # Check upload jobs
+        upload_jobs = history.get('upload_jobs', [])
+        if upload_jobs:
+            upload_status = upload_jobs[0].status
+            if upload_status in ("uploading", "completed", "active"):
+                return "completed"
+        
+        # Check sync jobs
+        sync_jobs = history.get('sync_jobs', [])
+        if sync_jobs:
+            sync_status = sync_jobs[0].status
+            if sync_status in ("syncing", "completed", "active"):
+                return "completed"
+        
+        return "pending"
+    
+    def _create_inferred_download_stage(self) -> StageDisplayInfo:
+        """Create a download stage marked as completed (inferred from downstream stages).
+        
+        This is used when no explicit download record exists but downstream
+        stages have started/completed, indicating the download must have succeeded.
+        """
+        return StageDisplayInfo(
+            name="download",
+            status="completed",
+            progress=100.0,
+            detail="Completed (inferred)",
+            symbol="●",
+        )
+    
     def _normalize_status(self, status: str) -> str:
         """Normalize job status to display status."""
         status_map = {
@@ -778,6 +841,12 @@ class VideoDetailScreen(Screen):
         elif job.status == "failed":
             error = job.error_message or "Unknown error"
             return f"Error: {error[:30]}"
+        elif job.status == "skipped":
+            # Show skip reason if available
+            error_msg = getattr(job, 'error_message', None)
+            if error_msg:
+                return f"Skipped: {error_msg[:25]}"
+            return "Skipped"
         elif job.status == "pending":
             return "Pending"
         else:

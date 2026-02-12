@@ -27,9 +27,13 @@ Configuration:
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, TypeVar
+
+import httpx
 
 from haven_cli.plugins.builtin.bittorrent.sources.base import (
     MagnetLink,
@@ -49,6 +53,83 @@ from haven_cli.plugins.builtin.bittorrent.sources.steps import (
     RegexStep,
     SelectElementsStep,
 )
+
+T = TypeVar("T")
+
+
+def with_exponential_backoff(
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    retryable_status_codes: tuple[int, ...] = (429, 503, 502, 504),
+    retryable_exceptions: tuple[type[Exception], ...] = (httpx.HTTPStatusError,),
+):
+    """Decorator that adds exponential backoff retry logic to async functions.
+    
+    This decorator catches HTTP 429 (Too Many Requests) and other retryable errors,
+    then retries the function with exponentially increasing delays.
+    
+    Args:
+        max_retries: Maximum number of retry attempts (default: 3)
+        base_delay: Initial delay in seconds (default: 1.0)
+        max_delay: Maximum delay between retries in seconds (default: 30.0)
+        retryable_status_codes: HTTP status codes that trigger a retry
+        retryable_exceptions: Exception types that trigger a retry
+        
+    Returns:
+        Decorated function with retry logic
+        
+    Example:
+        @with_exponential_backoff(max_retries=4, base_delay=1.0)
+        async def fetch_data(url: str) -> str:
+            # This will retry up to 4 times with delays: 1s, 2s, 4s, 8s
+            response = await client.get(url)
+            return response.text
+    """
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs) -> T:
+            last_exception: Optional[Exception] = None
+            
+            for attempt in range(max_retries + 1):
+                try:
+                    return await func(*args, **kwargs)
+                except retryable_exceptions as e:
+                    last_exception = e
+                    
+                    # Check if this is a retryable HTTP error
+                    should_retry = False
+                    if isinstance(e, httpx.HTTPStatusError):
+                        should_retry = e.response.status_code in retryable_status_codes
+                    
+                    if not should_retry:
+                        raise
+                    
+                    if attempt < max_retries:
+                        # Calculate exponential backoff delay
+                        delay = min(base_delay * (2 ** attempt), max_delay)
+                        print(
+                            f"Rate limited (HTTP {e.response.status_code}), "
+                            f"retrying in {delay}s (attempt {attempt + 1}/{max_retries})..."
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        print(
+                            f"Max retries ({max_retries}) exceeded for "
+                            f"HTTP {e.response.status_code} error"
+                        )
+                        raise
+                except Exception:
+                    # Non-retryable exceptions are raised immediately
+                    raise
+            
+            # This should never be reached, but just in case
+            if last_exception:
+                raise last_exception
+            raise RuntimeError("Unexpected state in retry logic")
+        
+        return wrapper
+    return decorator
 
 
 @dataclass
@@ -359,6 +440,38 @@ class ForumScraperSource(MagnetSource):
             print(f"Failed to create magnet link: {e}")
             return []
     
+    @with_exponential_backoff(
+        max_retries=7,
+        base_delay=5.0,
+        max_delay=300.0,
+        retryable_status_codes=(429, 503, 502, 504),
+        retryable_exceptions=(httpx.HTTPStatusError,),
+    )
+    async def _fetch_rmdown_page(self, url: str) -> str:
+        """Fetch a page from rmdown.com with exponential backoff retry.
+        
+        This is a helper method that wraps the fetch logic with retry
+        capabilities for handling rate limiting (HTTP 429).
+        
+        Args:
+            url: The URL to fetch
+            
+        Returns:
+            The HTML content of the page
+            
+        Raises:
+            httpx.HTTPStatusError: If the request fails with a non-retryable status
+        """
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            }
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            return response.text
+
     async def _get_magnet_from_rmdown(self, rmdown_link: str) -> Optional[str]:
         """Fetch magnet URI from rmdown.com.
         
@@ -369,20 +482,18 @@ class ForumScraperSource(MagnetSource):
             Magnet URI string or None if failed
         """
         try:
-            from haven_cli.plugins.builtin.bittorrent.sources.steps import FetchHtmlStep
-            
             # First, fetch the rmdown page to get the reff parameter
-            fetch_step = FetchHtmlStep(url_template=rmdown_link)
-            context = await fetch_step.execute(ExtractionContext())
+            # This uses exponential backoff for handling HTTP 429 errors
+            html = await self._fetch_rmdown_page(rmdown_link)
             
-            if context.raw_html:
+            if html:
                 # Extract ref from URL or hidden field
                 ref_match = re.search(r'hash=([A-Za-z0-9]+)', rmdown_link)
                 if not ref_match:
-                    ref_match = re.search(r'name="ref"[^>]*value="([^"]+)"', context.raw_html, re.IGNORECASE)
+                    ref_match = re.search(r'name="ref"[^>]*value="([^"]+)"', html, re.IGNORECASE)
                 
                 # Extract reff from hidden field (case-insensitive for NAME= vs name=)
-                reff_match = re.search(r'name="reff"[^>]*value="([^"]+)"', context.raw_html, re.IGNORECASE)
+                reff_match = re.search(r'name="reff"[^>]*value="([^"]+)"', html, re.IGNORECASE)
                 
                 if ref_match and reff_match:
                     ref = ref_match.group(1)
@@ -392,18 +503,23 @@ class ForumScraperSource(MagnetSource):
                     import urllib.parse
                     magnet_url = f"https://rmdown.com/download.php?action=magnet&ref={ref}&reff={urllib.parse.quote(reff)}"
                     
-                    magnet_step = FetchHtmlStep(url_template=magnet_url)
-                    magnet_context = await magnet_step.execute(ExtractionContext())
+                    # Use the same retry logic for the magnet URL
+                    magnet_html = await self._fetch_rmdown_page(magnet_url)
                     
-                    if magnet_context.raw_html:
+                    if magnet_html:
                         # The response is the magnet link directly
-                        magnet_uri = magnet_context.raw_html.strip()
+                        magnet_uri = magnet_html.strip()
                         if magnet_uri.startswith('magnet:'):
                             return magnet_uri
                         else:
                             print(f"Warning: rmdown returned non-magnet response: {magnet_uri[:100]}")
                 else:
                     print(f"Warning: Could not extract ref/reff from rmdown page")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                print(f"Warning: Rate limited by rmdown.com after retries, using fallback magnet")
+            else:
+                print(f"Warning: HTTP error from rmdown.com: {e}")
         except Exception as e:
             print(f"Warning: Failed to fetch magnet from rmdown: {e}")
         

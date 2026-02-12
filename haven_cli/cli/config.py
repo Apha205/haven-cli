@@ -222,10 +222,24 @@ def init_config(
     config_file = CONFIG_FILE
     config_path = config_dir / config_file
     
-    if config_path.exists() and not force:
+    config_existed = config_path.exists()
+    
+    if config_existed and not force:
         console.print(f"[yellow]Configuration already exists at {config_path}[/yellow]")
-        console.print("Use --force to overwrite")
-        raise typer.Exit(code=1)
+        console.print("[dim]Using existing configuration (use --force to overwrite)[/dim]")
+        console.print()
+        
+        # Still ensure directories and database are set up
+        from haven_cli.config import get_config, ensure_directories
+        from haven_cli.database.connection import create_tables
+        
+        config = get_config()
+        ensure_directories(config)
+        create_tables(config)
+        
+        console.print(f"[green]✓[/green] Directories verified")
+        console.print(f"[green]✓[/green] Database tables ready")
+        return
     
     console.print("[bold]Initializing Haven configuration...[/bold]")
     console.print()

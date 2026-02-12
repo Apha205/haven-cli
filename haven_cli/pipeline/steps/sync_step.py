@@ -348,6 +348,10 @@ class SyncStep(ConditionalStep):
         import logging
         logger = logging.getLogger(__name__)
         logger.info("Sync step skipped: %s", reason)
+        
+        # Create a skipped SyncJob record so TUI shows correct status
+        if context.video_id:
+            await self._create_skipped_sync_job(context.video_id, reason)
     
     # =========================================================================
     # Task 12: Job tracking helper methods
@@ -376,6 +380,43 @@ class SyncStep(ConditionalStep):
                 return job.id
         except Exception as e:
             logger.warning(f"Failed to create SyncJob: {e}")
+            return None
+    
+    async def _create_skipped_sync_job(
+        self,
+        video_id: int,
+        reason: str,
+    ) -> Optional[int]:
+        """Create a SyncJob record marked as skipped.
+        
+        This is called when sync is skipped due to configuration
+        (arkiv_sync_enabled=false) so the TUI correctly shows sync as skipped
+        rather than pending.
+        
+        Args:
+            video_id: Video ID
+            reason: Reason for skipping (e.g., "arkiv_sync_enabled is disabled")
+            
+        Returns:
+            Job ID or None if creation failed
+        """
+        try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.repositories import SyncJobRepository
+            
+            with get_db_session() as session:
+                repo = SyncJobRepository(session)
+                job = repo.create(
+                    video_id=video_id,
+                    status="skipped",
+                )
+                # Update with skip reason
+                job.error_message = reason
+                session.commit()
+                logger.debug(f"Created skipped SyncJob {job.id} for video {video_id}")
+                return job.id
+        except Exception as e:
+            logger.warning(f"Failed to create skipped SyncJob: {e}")
             return None
     
     async def _complete_sync_job(

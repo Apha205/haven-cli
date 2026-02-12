@@ -732,23 +732,57 @@ class JobScheduler:
 
         logger.info(f"Executing scheduled job: {job.name} ({job_id})")
         result = await self._execute_job(job)
-        self._record_execution(result, plugin_name=job.plugin_name)
+        
+        # Run blocking database operations in thread pool to avoid blocking event loop
+        # This prevents "maximum number of running instances reached" errors
+        loop = asyncio.get_event_loop()
+        
+        # Record execution in thread pool
+        try:
+            await asyncio.wait_for(
+                loop.run_in_executor(
+                    None, self._record_execution, result, job.plugin_name
+                ),
+                timeout=10.0  # 10 second timeout for database operations
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout recording execution for job {job_id}")
+        except Exception as e:
+            logger.error(f"Error recording execution for job {job_id}: {e}")
 
         # Update next run time from APScheduler
         if self._scheduler:
             apscheduler_job = self._scheduler.get_job(str(job_id))
             if apscheduler_job and apscheduler_job.next_run_time:
                 job.next_run = apscheduler_job.next_run_time.replace(tzinfo=None)
-                # Persist updated next_run to database
+                # Persist updated next_run to database in thread pool
                 try:
-                    from haven_cli.database.connection import get_db_session
-                    from haven_cli.database.repositories import JobRepository
-                    
-                    with get_db_session() as session:
-                        job_repo = JobRepository(session)
-                        job_repo.update(job_id, next_run=job.next_run)
+                    await asyncio.wait_for(
+                        loop.run_in_executor(
+                            None, self._update_job_next_run, job_id, job.next_run
+                        ),
+                        timeout=10.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(f"Timeout updating next_run for job {job_id}")
                 except Exception as e:
                     logger.error(f"Failed to update next_run in database: {e}")
+        
+        logger.info(f"Job {job_id} callback completed successfully")
+
+    def _update_job_next_run(self, job_id: UUID, next_run: datetime) -> None:
+        """Update job's next_run time in database (synchronous, for thread pool).
+        
+        Args:
+            job_id: UUID of the job to update
+            next_run: New next_run time
+        """
+        from haven_cli.database.connection import get_db_session
+        from haven_cli.database.repositories import JobRepository
+        
+        with get_db_session() as session:
+            job_repo = JobRepository(session)
+            job_repo.update(job_id, next_run=next_run)
 
     async def _execute_job(self, job: RecurringJob) -> JobExecutionResult:
         """Execute a job.
@@ -795,6 +829,9 @@ class JobScheduler:
 
     def _record_execution(self, result: JobExecutionResult, plugin_name: str = "") -> None:
         """Record execution result in history and database.
+        
+        This is a SYNCHRONOUS method intended to be called via run_in_executor
+        to avoid blocking the async event loop during database operations.
         
         Args:
             result: The execution result to record

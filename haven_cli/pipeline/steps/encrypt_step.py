@@ -648,6 +648,10 @@ class EncryptStep(ConditionalStep):
     async def on_skip(self, context: PipelineContext, reason: str) -> None:
         """Handle step skip - encryption not requested."""
         logger.debug(f"Encrypt step skipped: {reason}")
+        
+        # Create a skipped EncryptionJob record so TUI shows correct status
+        if context.video_id:
+            await self._create_skipped_encryption_job(context.video_id, reason)
     
     async def on_error(
         self,
@@ -690,6 +694,44 @@ class EncryptStep(ConditionalStep):
                 return job.id
         except Exception as e:
             logger.warning(f"Failed to create EncryptionJob: {e}")
+            return None
+    
+    async def _create_skipped_encryption_job(
+        self,
+        video_id: int,
+        reason: str,
+    ) -> Optional[int]:
+        """Create an EncryptionJob record marked as skipped.
+        
+        This is called when encryption is skipped due to configuration
+        (encrypt=false) so the TUI correctly shows encryption as skipped
+        rather than pending.
+        
+        Args:
+            video_id: Video ID
+            reason: Reason for skipping (e.g., "encrypt is disabled")
+            
+        Returns:
+            Job ID or None if creation failed
+        """
+        try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.repositories import EncryptionJobRepository
+            
+            with get_db_session() as session:
+                repo = EncryptionJobRepository(session)
+                job = repo.create(
+                    video_id=video_id,
+                    status="skipped",
+                    bytes_total=0,
+                )
+                # Update with skip reason
+                job.error_message = reason
+                session.commit()
+                logger.debug(f"Created skipped EncryptionJob {job.id} for video {video_id}")
+                return job.id
+        except Exception as e:
+            logger.warning(f"Failed to create skipped EncryptionJob: {e}")
             return None
     
     async def _update_job_progress(

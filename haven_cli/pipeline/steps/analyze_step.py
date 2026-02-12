@@ -341,8 +341,12 @@ class AnalyzeStep(ConditionalStep):
             raise
     
     async def on_skip(self, context: PipelineContext, reason: str) -> None:
-        """Handle step skip - log that VLM was skipped."""
+        """Handle step skip - log that VLM was skipped and create skipped record."""
         logger.info(f"VLM analysis skipped: {reason}")
+        
+        # Create a skipped AnalysisJob record so TUI shows correct status
+        if context.video_id:
+            await self._create_skipped_analysis_job(context.video_id, reason)
     
     async def _create_analysis_job(self, video_id: int) -> Optional[int]:
         """Create an AnalysisJob record for tracking.
@@ -371,6 +375,46 @@ class AnalyzeStep(ConditionalStep):
                 return job.id
         except Exception as e:
             logger.warning(f"Failed to create AnalysisJob: {e}")
+            return None
+    
+    async def _create_skipped_analysis_job(
+        self,
+        video_id: int,
+        reason: str,
+    ) -> Optional[int]:
+        """Create an AnalysisJob record marked as skipped.
+        
+        This is called when VLM analysis is skipped due to configuration
+        (vlm_enabled=false) so the TUI correctly shows analysis as skipped
+        rather than pending.
+        
+        Args:
+            video_id: Video ID
+            reason: Reason for skipping (e.g., "vlm_enabled is disabled")
+            
+        Returns:
+            Job ID or None if creation failed
+        """
+        try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.repositories import AnalysisJobRepository
+            
+            with get_db_session() as session:
+                repo = AnalysisJobRepository(session)
+                job = repo.create(
+                    video_id=video_id,
+                    analysis_type="vlm",
+                    model_name="none",
+                    status="skipped",
+                    frames_total=0,
+                )
+                # Update with skip reason
+                job.error_message = reason
+                session.commit()
+                logger.debug(f"Created skipped AnalysisJob {job.id} for video {video_id}")
+                return job.id
+        except Exception as e:
+            logger.warning(f"Failed to create skipped AnalysisJob: {e}")
             return None
     
     async def _update_job_progress(

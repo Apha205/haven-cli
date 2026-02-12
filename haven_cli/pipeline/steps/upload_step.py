@@ -466,7 +466,7 @@ class UploadStep(ConditionalStep):
         logger.info(f"Starting Filecoin upload for: {file_to_upload}")
         
         try:
-            # Use a longer timeout for Filecoin upload (600 seconds)
+            # Use a longer timeout for Filecoin upload (6000 seconds)
             # Filecoin uploads typically take 60-120 seconds for small files
             # Use max_retries=1 for upload since it's a long-running operation
             result = await self._js_call_with_retry(
@@ -479,7 +479,7 @@ class UploadStep(ConditionalStep):
                     },
                     "onProgress": True,  # Enable progress notifications
                 },
-                timeout=600.0,  # 10 minutes timeout for upload
+                timeout=6000.0,  # 100 minutes timeout for upload
                 max_retries=1,  # Only 1 retry for long uploads
             )
         except Exception as e:

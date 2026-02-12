@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from haven_cli.database.connection import get_db_session
-from haven_cli.database.models import Download
+from haven_cli.database.models import Download, TorrentDownload
 from haven_cli.database.repositories import VideoRepository
 from haven_cli.media import detect_mime_type, extract_video_metadata
 from haven_cli.media.exceptions import VideoMetadataError
@@ -318,6 +318,23 @@ class IngestStep(PipelineStep):
             # Determine source type from plugin name
             source_type = self._get_source_type(plugin_name)
             
+            # Look up torrent timestamps for accurate duration
+            started_at = datetime.now(timezone.utc)
+            completed_at = datetime.now(timezone.utc)
+            
+            if source_type == "torrent":
+                # Query torrent_downloads for actual timestamps
+                source_id = context.options.get("source_id")
+                if source_id:
+                    torrent = session.query(TorrentDownload).filter(
+                        TorrentDownload.source_id == source_id
+                    ).first()
+                    if torrent:
+                        if torrent.started_at:
+                            started_at = torrent.started_at
+                        if torrent.completed_at:
+                            completed_at = torrent.completed_at
+            
             # Create completed download record
             download = Download(
                 video_id=video_id,
@@ -326,8 +343,8 @@ class IngestStep(PipelineStep):
                 progress_percent=100.0,
                 bytes_downloaded=metadata.file_size,
                 bytes_total=metadata.file_size,
-                started_at=datetime.now(timezone.utc),
-                completed_at=datetime.now(timezone.utc),
+                started_at=started_at,
+                completed_at=completed_at,
                 source_metadata={
                     "plugin_name": plugin_name,
                     "source_uri": source_uri,

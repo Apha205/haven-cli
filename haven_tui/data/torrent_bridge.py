@@ -83,9 +83,17 @@ class BitTorrentProgressBridge:
     
     async def _poll_loop(self) -> None:
         """Poll TorrentDownload table and write to downloads table."""
+        completed_sync_counter = 0
         while self._polling:
             try:
                 await self._sync_active_torrents()
+                
+                # Sync completed torrents less frequently (every 30 polls ~ 30 seconds)
+                completed_sync_counter += 1
+                if completed_sync_counter >= 30:
+                    await self._sync_completed_torrents()
+                    completed_sync_counter = 0
+                
                 await asyncio.sleep(self.poll_interval)
             except asyncio.CancelledError:
                 break
@@ -121,6 +129,40 @@ class BitTorrentProgressBridge:
         except Exception as e:
             logger.error(f"Error syncing active torrents: {e}")
             raise
+    
+    async def _sync_completed_torrents(self) -> None:
+        """Sync completed torrents to downloads table to preserve completion timestamps.
+        
+        Completed torrents only need to be synced once to ensure the downloads table
+        has the correct completed_at timestamp from the torrent_downloads table.
+        """
+        try:
+            with self.db_session_factory() as session:
+                # Query recently completed torrents (last 24 hours) that haven't been synced
+                from datetime import timedelta
+                since = datetime.now(timezone.utc) - timedelta(hours=24)
+                
+                completed_torrents = session.query(TorrentDownload).filter(
+                    TorrentDownload.status == "completed",
+                    TorrentDownload.completed_at >= since
+                ).all()
+                
+                for torrent in completed_torrents:
+                    try:
+                        # Only sync if we haven't seen this completed torrent before
+                        # or if it was recently completed
+                        last_update = self._last_update.get(torrent.infohash)
+                        if last_update is None:
+                            progress = self._torrent_to_progress(torrent, session)
+                            self.tracker.report_progress(progress)
+                            self._last_update[torrent.infohash] = datetime.now(timezone.utc)
+                            logger.debug(f"Synced completed torrent {torrent.infohash[:16]}...")
+                    except Exception as e:
+                        logger.warning(f"Error syncing completed torrent {torrent.infohash[:16]}...: {e}")
+        
+        except Exception as e:
+            logger.error(f"Error syncing completed torrents: {e}")
+            # Don't raise - completed torrent sync is best-effort
     
     def _torrent_to_progress(
         self,
@@ -176,6 +218,7 @@ class BitTorrentProgressBridge:
             upload_rate=float(torrent.upload_rate),
             eta_seconds=eta_seconds,
             started_at=torrent.started_at,
+            completed_at=torrent.completed_at,
             updated_at=torrent.last_activity,
             connections=torrent.peers,
             seeds=torrent.seeds,

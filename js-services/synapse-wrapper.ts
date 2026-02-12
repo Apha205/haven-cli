@@ -112,8 +112,12 @@ export function createSynapseWrapper(): SynapseWrapper {
 
 // Logger factory for filecoin-pin
 function createLogger(): Logger {
+  // Check for debug mode via environment variables
+  const isDebug = Deno.env.get('DEBUG') === '1' || 
+                  Deno.env.get('LOG_LEVEL')?.toLowerCase() === 'debug';
+  
   return {
-    level: 'info' as const,
+    level: isDebug ? 'debug' : 'info' as const,
     info: (msg: unknown, ...args: unknown[]) => {
       console.log('[Synapse]', msg, ...args);
     },
@@ -124,13 +128,17 @@ function createLogger(): Logger {
       console.error('[Synapse]', msg, ...args);
     },
     debug: (msg: unknown, ...args: unknown[]) => {
-      console.debug('[Synapse]', msg, ...args);
+      if (isDebug) {
+        console.debug('[Synapse]', msg, ...args);
+      }
     },
     fatal: (msg: unknown, ...args: unknown[]) => {
       console.error('[Synapse] FATAL:', msg, ...args);
     },
     trace: (msg: unknown, ...args: unknown[]) => {
-      console.trace('[Synapse]', msg, ...args);
+      if (isDebug) {
+        console.trace('[Synapse]', msg, ...args);
+      }
     },
     silent: (msg: unknown, ...args: unknown[]) => {
       // Silent - no output

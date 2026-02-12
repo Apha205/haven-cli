@@ -107,6 +107,7 @@ class DownloadProgress:
     # Time estimates
     eta_seconds: Optional[int] = None
     started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     
     # Connection metrics (plugin-specific)
@@ -287,7 +288,8 @@ class DownloadProgressTracker:
                         download.started_at = progress.started_at
                     
                     if progress.status == DownloadStatus.COMPLETED:
-                        download.completed_at = datetime.now(timezone.utc)
+                        # Use the progress's completed_at if available, otherwise use now
+                        download.completed_at = progress.completed_at or datetime.now(timezone.utc)
                     elif progress.status == DownloadStatus.FAILED:
                         download.failed_at = datetime.now(timezone.utc)
                         download.error_message = progress.error_message
@@ -727,6 +729,20 @@ class BitTorrentProgressAdapter:
         progress = data.get("progress", 0.0)
         progress_pct = progress * 100 if progress <= 1.0 else progress
         
+        # Parse timestamps from ISO format strings
+        started_at = None
+        completed_at = None
+        if data.get("started_at"):
+            try:
+                started_at = datetime.fromisoformat(data["started_at"])
+            except (ValueError, TypeError):
+                pass
+        if data.get("completed_at"):
+            try:
+                completed_at = datetime.fromisoformat(data["completed_at"])
+            except (ValueError, TypeError):
+                pass
+        
         return DownloadProgress(
             source_id=self.infohash,
             source_type="bittorrent",
@@ -738,6 +754,8 @@ class BitTorrentProgressAdapter:
             progress_pct=progress_pct,
             download_rate=float(data.get("download_rate", 0)),
             upload_rate=float(data.get("upload_rate", 0)),
+            started_at=started_at,
+            completed_at=completed_at,
             connections=data.get("peers", 0),
             seeds=data.get("seeds", 0),
             leechers=data.get("peers", 0) - data.get("seeds", 0),

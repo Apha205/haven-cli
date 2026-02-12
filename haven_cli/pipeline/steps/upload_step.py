@@ -39,6 +39,39 @@ from haven_cli.services.blockchain_network import get_network_config
 logger = logging.getLogger(__name__)
 
 
+# ============================================================================
+# Progress Stage Constants
+# ============================================================================
+# These constants define the upload progress stages and their percentage ranges.
+# The Synapse SDK reports progress from 0-100, but not all percentages
+# represent actual network upload activity.
+#
+# Progress mapping from synapse-wrapper.ts:
+#   0-10%   = Connecting to Synapse SDK
+#   20%     = CAR file created (local preparation, no network activity)
+#   25-35%  = Payment/validation checks
+#   80-100% = Actual network upload to Filecoin
+#
+# Therefore:
+#   - bytes_uploaded = 0 during preparation phase (< 80%)
+#   - upload_speed = 0 during preparation phase (< 80%)
+#   - Real bytes/speed only calculated during network phase (>= 80%)
+
+# Stage names for UploadJob.stage and PipelineSnapshot tracking
+STAGE_CONNECTING = "connecting"   # 0-10%: Initial connection
+STAGE_PREPARING = "preparing"     # 20%: CAR file creation
+STAGE_UPLOADING = "uploading"     # 80-99%: Actual network upload
+STAGE_CONFIRMING = "confirming"   # 90%: Transaction confirmation
+STAGE_COMPLETE = "complete"       # 100%: Upload finished
+
+# Progress thresholds
+NETWORK_UPLOAD_START_PERCENT = 80  # Actual network upload starts at 80%
+CAR_CREATION_PERCENT = 20          # CAR file created at 20%
+CONNECTION_PERCENT = 10            # Connected at 10%
+CONFIRMATION_PERCENT = 90          # Confirming at 90%
+COMPLETION_PERCENT = 100           # Complete at 100%
+
+
 class UploadStep(ConditionalStep):
     """Pipeline step for Filecoin upload.
     
@@ -208,22 +241,53 @@ class UploadStep(ConditionalStep):
         # Note: Actual JS calls use _js_call_with_retry for resilience
         bridge = await self._get_js_bridge()
         
+        # Track actual network upload start time and bytes
+        self._network_upload_started = False
+        self._network_upload_start_time: Optional[float] = None
+        self._actual_bytes_uploaded = 0
+        
         # Create progress callback
-        async def on_progress(stage: str, percent: int) -> None:
-            # Update job progress
+        async def on_progress(stage: str, percent: int, bytes_uploaded: int = 0, total_bytes: int = 0) -> None:
+            # Update job progress with accurate data
             if self._job_id and context.video_id:
                 file_size = context.video_metadata.file_size if context.video_metadata else 0
-                bytes_uploaded = int(file_size * percent / 100) if file_size else 0
                 
-                # Calculate upload speed
-                if self._start_time:
-                    elapsed = time.time() - self._start_time
-                    upload_speed = int(bytes_uploaded / elapsed) if elapsed > 0 else 0
-                else:
+                # Determine if we're in preparation or actual network upload phase
+                # Based on synapse-wrapper.ts stages:
+                # 0-35% = Preparation (CAR creation, payment check)
+                # 80%+ = Actual network upload
+                is_preparation = percent < NETWORK_UPLOAD_START_PERCENT
+                
+                if is_preparation:
+                    # During preparation, no actual network bytes have been transferred
+                    display_bytes_uploaded = 0
                     upload_speed = 0
+                else:
+                    # Track network upload start
+                    if not self._network_upload_started:
+                        self._network_upload_started = True
+                        self._network_upload_start_time = time.time()
+                        self._actual_bytes_uploaded = bytes_uploaded if bytes_uploaded > 0 else file_size
+                    
+                    # Use actual bytes from callback, or calculate from percentage of file size
+                    display_bytes_uploaded = bytes_uploaded if bytes_uploaded > 0 else int(
+                        file_size * (percent - NETWORK_UPLOAD_START_PERCENT) / (COMPLETION_PERCENT - NETWORK_UPLOAD_START_PERCENT)
+                    )
+                    self._actual_bytes_uploaded = display_bytes_uploaded
+                    
+                    # Calculate speed only during actual network upload
+                    if self._network_upload_start_time:
+                        network_elapsed = time.time() - self._network_upload_start_time
+                        upload_speed = int(display_bytes_uploaded / network_elapsed) if network_elapsed > 0 else 0
+                    else:
+                        upload_speed = 0
                 
                 await self._update_job_progress(
-                    context.video_id, bytes_uploaded, percent, upload_speed
+                    context.video_id, 
+                    display_bytes_uploaded, 
+                    percent, 
+                    upload_speed,
+                    stage=stage  # Pass actual stage to database
                 )
             
             await self._emit_event(EventType.UPLOAD_PROGRESS, context, {
@@ -232,6 +296,7 @@ class UploadStep(ConditionalStep):
                 "job_id": self._job_id,
                 "stage": stage,
                 "progress_percent": percent,
+                "bytes_uploaded": bytes_uploaded if bytes_uploaded > 0 else None,
             })
         
         # Set up progress notification handler
@@ -404,7 +469,7 @@ class UploadStep(ConditionalStep):
         video_path: str,
         config: Dict[str, Any],
         encryption_metadata: Optional[EncryptionMetadata],
-        on_progress: Callable[[str, int], Awaitable[None]],
+        on_progress: Callable[[str, int, int, int], Awaitable[None]],
     ) -> Dict[str, Any]:
         """Upload content to Filecoin via Synapse SDK.
         
@@ -446,7 +511,7 @@ class UploadStep(ConditionalStep):
             logger.error(f"Failed to connect to Synapse: {e}")
             raise RuntimeError(f"Synapse connection failed: {e}") from e
         
-        await on_progress("preparing", 10)
+        await on_progress(STAGE_CONNECTING, CONNECTION_PERCENT, 0, 0)
         
         # Determine file to upload (encrypted or original)
         file_to_upload = video_path
@@ -461,7 +526,8 @@ class UploadStep(ConditionalStep):
             raise FileNotFoundError(f"File to upload not found: {file_to_upload}")
         
         # Upload to Filecoin
-        await on_progress("uploading", 20)
+        # Note: Progress 20% from synapse means CAR file created, not actual upload started
+        await on_progress(STAGE_PREPARING, CAR_CREATION_PERCENT, 0, 0)
         
         logger.info(f"Starting Filecoin upload for: {file_to_upload}")
         
@@ -486,7 +552,7 @@ class UploadStep(ConditionalStep):
             logger.error(f"Filecoin upload failed: {e}")
             raise RuntimeError(f"Upload to Filecoin failed: {e}") from e
         
-        await on_progress("confirming", 90)
+        await on_progress(STAGE_CONFIRMING, CONFIRMATION_PERCENT, 0, 0)
         
         # Wait for deal confirmation (optional)
         if config.get("wait_for_deal", False):
@@ -511,7 +577,7 @@ class UploadStep(ConditionalStep):
                 # Log but don't fail - upload succeeded even if status check fails
                 logger.warning(f"Could not get deal status: {e}")
         
-        await on_progress("complete", 100)
+        await on_progress(STAGE_COMPLETE, COMPLETION_PERCENT, 0, 0)
         
         logger.info(f"Upload complete. CID: {result.get('cid', '')}")
         
@@ -713,14 +779,16 @@ class UploadStep(ConditionalStep):
         bytes_uploaded: int,
         progress_percent: float,
         upload_speed: int = 0,
+        stage: str = "uploading",
     ) -> None:
         """Update UploadJob progress.
         
         Args:
             video_id: Video ID
-            bytes_uploaded: Bytes uploaded so far
+            bytes_uploaded: Bytes uploaded so far (actual network bytes)
             progress_percent: Progress percentage (0-100)
-            upload_speed: Upload speed in bytes/sec
+            upload_speed: Upload speed in bytes/sec (only during network upload)
+            stage: Current upload stage (e.g., 'preparing', 'uploading', 'confirming')
         """
         try:
             from haven_cli.database.connection import get_db_session
@@ -729,13 +797,16 @@ class UploadStep(ConditionalStep):
             with get_db_session() as session:
                 job_repo = UploadJobRepository(session)
                 if self._job_id:
-                    job_repo.update_progress(self._job_id, bytes_uploaded, upload_speed)
+                    job_repo.update_progress(self._job_id, bytes_uploaded, upload_speed, stage)
                 
-                # Also update pipeline snapshot
+                # Also update pipeline snapshot with accurate stage info
                 snapshot_repo = PipelineSnapshotRepository(session)
+                # Store detailed stage in status field for visibility
+                # Format: "upload:stage_name" to indicate upload sub-stage
+                stage_detail = f"upload:{stage}" if stage != "uploading" else "upload"
                 snapshot_repo.update_stage(
                     video_id=video_id,
-                    stage="upload",
+                    stage=stage_detail,
                     status="active",
                     progress_percent=progress_percent,
                     stage_speed=upload_speed,

@@ -516,6 +516,10 @@ class UploadJob(Base):
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
     target: Mapped[str] = mapped_column(String, nullable=False)  # "ipfs" | "arkiv" | "s3"
     
+    # Upload substage for detailed progress tracking
+    # Values: "connecting", "preparing", "uploading", "confirming", "complete"
+    stage: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    
     progress_percent: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     bytes_uploaded: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     bytes_total: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -552,6 +556,7 @@ class UploadJob(Base):
             "id": self.id,
             "video_id": self.video_id,
             "status": self.status,
+            "stage": self.stage,
             "target": self.target,
             "progress_percent": self.progress_percent,
             "bytes_uploaded": self.bytes_uploaded,

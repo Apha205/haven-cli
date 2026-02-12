@@ -1066,11 +1066,15 @@ class VideoListScreen(Screen):
                 job_repo = getattr(self.app, 'job_history_repo', None)
                 snapshot_repo = getattr(self.app, 'snapshot_repo', None)
                 
+                # Get state_manager from the app (for real-time state fallback)
+                state_manager = getattr(self.app, 'state_manager', None)
+                
                 # Create and push the detail screen with repositories
                 detail_screen = VideoDetailScreen(
                     video_id=video_id,
                     job_repo=job_repo,
                     snapshot_repo=snapshot_repo,
+                    state_manager=state_manager,
                 )
                 self.app.push_screen(detail_screen)
             except Exception as e:

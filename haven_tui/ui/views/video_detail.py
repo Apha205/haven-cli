@@ -24,6 +24,9 @@ from haven_cli.database.models import (
     Download, EncryptionJob, UploadJob, SyncJob, AnalysisJob
 )
 
+# Import StateManager for fallback when database records don't exist yet
+from haven_tui.core.state_manager import StateManager, VideoState
+
 
 @dataclass
 class StageDisplayInfo:
@@ -499,6 +502,7 @@ class VideoDetailScreen(Screen):
         video_id: int,
         job_repo: Optional[JobHistoryRepository] = None,
         snapshot_repo: Optional[PipelineSnapshotRepository] = None,
+        state_manager: Optional[StateManager] = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the video detail screen.
@@ -507,12 +511,14 @@ class VideoDetailScreen(Screen):
             video_id: ID of the video to display
             job_repo: Repository for accessing job history
             snapshot_repo: Repository for accessing pipeline snapshots
+            state_manager: StateManager for accessing real-time state (fallback)
             **kwargs: Additional arguments passed to Screen
         """
         super().__init__(**kwargs)
         self.video_id = video_id
         self._job_repo = job_repo
         self._snapshot_repo = snapshot_repo
+        self._state_manager = state_manager
         self._show_graph: bool = False
     
     def compose(self) -> None:
@@ -578,11 +584,45 @@ class VideoDetailScreen(Screen):
             graph.current_stage = video.current_stage.value
     
     def _load_pipeline_history(self) -> None:
-        """Load and display pipeline history from job tables."""
-        if self._job_repo is None or self.video_id is None:
+        """Load and display pipeline history from job tables.
+        
+        Falls back to StateManager if no database records exist (e.g., for
+        downloads that are tracked via events but haven't been persisted yet).
+        """
+        if self.video_id is None:
             return
         
-        history = self._job_repo.get_video_pipeline_history(self.video_id)
+        # First, try to get data from database via job_repo
+        history = None
+        if self._job_repo is not None:
+            try:
+                history = self._job_repo.get_video_pipeline_history(self.video_id)
+            except Exception:
+                history = None
+        
+        # Check if we have any actual job data from the database
+        has_db_data = history and any([
+            history.get('downloads', []),
+            history.get('analysis_jobs', []),
+            history.get('encryption_jobs', []),
+            history.get('upload_jobs', []),
+            history.get('sync_jobs', []),
+        ])
+        
+        # If no database records but we have a state_manager with this video,
+        # use the state_manager data (for real-time downloads not yet persisted)
+        if not has_db_data and self._state_manager is not None:
+            video_state = self._state_manager.get_video(self.video_id)
+            if video_state is not None:
+                stages = self._create_stages_from_state(video_state)
+                pipeline_widget = self.query_one("#pipeline-progress", PipelineProgressWidget)
+                pipeline_widget.set_stages(stages)
+                return
+        
+        # Fall back to database data (original behavior)
+        if history is None:
+            history = {}
+        
         stages: List[StageDisplayInfo] = []
         
         # Process download stage
@@ -629,6 +669,127 @@ class VideoDetailScreen(Screen):
         # Update pipeline widget
         pipeline_widget = self.query_one("#pipeline-progress", PipelineProgressWidget)
         pipeline_widget.set_stages(stages)
+    
+    def _create_stages_from_state(self, state: VideoState) -> List[StageDisplayInfo]:
+        """Create stage info from VideoState (StateManager).
+        
+        This is used as a fallback when no database records exist yet,
+        for real-time tracking of downloads that are in progress.
+        
+        Args:
+            state: VideoState from StateManager
+            
+        Returns:
+            List of StageDisplayInfo for all pipeline stages
+        """
+        stages: List[StageDisplayInfo] = []
+        
+        # Download stage
+        download_status = state.download_status
+        download_progress = state.download_progress
+        download_detail = self._format_download_detail_from_state(state)
+        stages.append(StageDisplayInfo(
+            name="download",
+            status=self._normalize_status(download_status),
+            progress=download_progress,
+            detail=download_detail,
+            symbol=self._get_status_symbol(self._normalize_status(download_status)),
+        ))
+        
+        # Analysis stage
+        analysis_status = state.analysis_status
+        analysis_progress = state.analysis_progress
+        stages.append(StageDisplayInfo(
+            name="analysis",
+            status=self._normalize_status(analysis_status),
+            progress=analysis_progress,
+            detail=self._format_stage_detail_from_state(analysis_status, analysis_progress),
+            symbol=self._get_status_symbol(self._normalize_status(analysis_status)),
+        ))
+        
+        # Encryption stage
+        encrypt_status = state.encrypt_status
+        encrypt_progress = state.encrypt_progress
+        stages.append(StageDisplayInfo(
+            name="encrypt",
+            status=self._normalize_status(encrypt_status),
+            progress=encrypt_progress,
+            detail=self._format_stage_detail_from_state(encrypt_status, encrypt_progress),
+            symbol=self._get_status_symbol(self._normalize_status(encrypt_status)),
+        ))
+        
+        # Upload stage
+        upload_status = state.upload_status
+        upload_progress = state.upload_progress
+        upload_speed = state.upload_speed
+        upload_detail = self._format_upload_detail_from_state(upload_status, upload_progress, upload_speed)
+        stages.append(StageDisplayInfo(
+            name="upload",
+            status=self._normalize_status(upload_status),
+            progress=upload_progress,
+            detail=upload_detail,
+            symbol=self._get_status_symbol(self._normalize_status(upload_status)),
+        ))
+        
+        # Sync stage
+        sync_status = state.sync_status
+        sync_progress = state.sync_progress
+        stages.append(StageDisplayInfo(
+            name="sync",
+            status=self._normalize_status(sync_status),
+            progress=sync_progress,
+            detail=self._format_stage_detail_from_state(sync_status, sync_progress),
+            symbol=self._get_status_symbol(self._normalize_status(sync_status)),
+        ))
+        
+        return stages
+    
+    def _format_download_detail_from_state(self, state: VideoState) -> str:
+        """Format download detail string from VideoState."""
+        if state.download_status == "active":
+            progress = state.download_progress
+            speed = state.download_speed
+            detail = f"{progress:.1f}% {self._format_speed(speed)}"
+            if state.download_eta:
+                detail += f" ETA: {self._format_duration(state.download_eta)}"
+            return detail
+        elif state.download_status == "completed":
+            return "Completed"
+        elif state.download_status == "failed":
+            return "Failed"
+        elif state.download_status == "paused":
+            return "Paused"
+        else:
+            return "Pending"
+    
+    def _format_upload_detail_from_state(self, status: str, progress: float, speed: float) -> str:
+        """Format upload detail string from VideoState."""
+        if status == "active":
+            detail = f"{progress:.1f}%"
+            if speed:
+                detail += f" {self._format_speed(speed)}"
+            return detail
+        elif status == "completed":
+            return "Completed"
+        elif status == "failed":
+            return "Failed"
+        elif status == "paused":
+            return "Paused"
+        else:
+            return "Pending"
+    
+    def _format_stage_detail_from_state(self, status: str, progress: float) -> str:
+        """Format generic stage detail string from VideoState."""
+        if status == "active":
+            return f"{progress:.1f}%"
+        elif status == "completed":
+            return "Completed"
+        elif status == "failed":
+            return "Failed"
+        elif status == "paused":
+            return "Paused"
+        else:
+            return "Pending"
     
     def _create_download_stage(self, download: Download) -> StageDisplayInfo:
         """Create stage info for download."""
@@ -962,6 +1123,7 @@ class VideoDetailView:
         video_id: ID of the video to display
         job_repo: Repository for accessing job history
         snapshot_repo: Repository for accessing pipeline snapshots
+        state_manager: StateManager for accessing real-time state
         screen: The VideoDetailScreen instance
     """
     
@@ -970,6 +1132,7 @@ class VideoDetailView:
         video_id: int,
         job_repo: Optional[JobHistoryRepository] = None,
         snapshot_repo: Optional[PipelineSnapshotRepository] = None,
+        state_manager: Optional[StateManager] = None,
     ) -> None:
         """Initialize the video detail view.
         
@@ -977,10 +1140,12 @@ class VideoDetailView:
             video_id: ID of the video to display
             job_repo: Repository for accessing job history
             snapshot_repo: Repository for accessing pipeline snapshots
+            state_manager: StateManager for accessing real-time state
         """
         self.video_id = video_id
         self.job_repo = job_repo
         self.snapshot_repo = snapshot_repo
+        self.state_manager = state_manager
         self.screen: Optional[VideoDetailScreen] = None
     
     def create_screen(self) -> VideoDetailScreen:
@@ -993,6 +1158,7 @@ class VideoDetailView:
             video_id=self.video_id,
             job_repo=self.job_repo,
             snapshot_repo=self.snapshot_repo,
+            state_manager=self.state_manager,
         )
         return self.screen
     

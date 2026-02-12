@@ -137,8 +137,8 @@ class TestUploadStepUpload:
         
         progress_calls = []
         
-        async def on_progress(stage: str, percent: int) -> None:
-            progress_calls.append((stage, percent))
+        async def on_progress(stage: str, percent: int, bytes_uploaded: int = 0, total_bytes: int = 0) -> None:
+            progress_calls.append((stage, percent, bytes_uploaded, total_bytes))
         
         result = await step._upload_to_filecoin(
             mock_bridge,
@@ -208,7 +208,7 @@ class TestUploadStepUpload:
             "wait_for_deal": False,
         }
         
-        async def on_progress(stage: str, percent: int) -> None:
+        async def on_progress(stage: str, percent: int, bytes_uploaded: int = 0, total_bytes: int = 0) -> None:
             pass
         
         result = await step._upload_to_filecoin(
@@ -240,7 +240,7 @@ class TestUploadStepUpload:
             "wait_for_deal": False,
         }
         
-        async def on_progress(stage: str, percent: int) -> None:
+        async def on_progress(stage: str, percent: int, bytes_uploaded: int = 0, total_bytes: int = 0) -> None:
             pass
         
         with pytest.raises(RuntimeError, match="Synapse connection failed"):
@@ -272,7 +272,7 @@ class TestUploadStepUpload:
             "wait_for_deal": False,
         }
         
-        async def on_progress(stage: str, percent: int) -> None:
+        async def on_progress(stage: str, percent: int, bytes_uploaded: int = 0, total_bytes: int = 0) -> None:
             pass
         
         with pytest.raises(RuntimeError, match="Upload to Filecoin failed"):
@@ -298,7 +298,7 @@ class TestUploadStepUpload:
             "wait_for_deal": False,
         }
         
-        async def on_progress(stage: str, percent: int) -> None:
+        async def on_progress(stage: str, percent: int, bytes_uploaded: int = 0, total_bytes: int = 0) -> None:
             pass
         
         with pytest.raises(FileNotFoundError, match="File to upload not found"):
@@ -336,7 +336,7 @@ class TestUploadStepUpload:
             "wait_for_deal": True,
         }
         
-        async def on_progress(stage: str, percent: int) -> None:
+        async def on_progress(stage: str, percent: int, bytes_uploaded: int = 0, total_bytes: int = 0) -> None:
             pass
         
         result = await step._upload_to_filecoin(

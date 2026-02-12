@@ -1382,8 +1382,16 @@ class UploadJobRepository:
         job_id: int,
         bytes_uploaded: int,
         upload_speed: Optional[int] = None,
+        stage: Optional[str] = None,
     ) -> Optional[UploadJob]:
-        """Update upload progress."""
+        """Update upload progress.
+        
+        Args:
+            job_id: Job ID
+            bytes_uploaded: Bytes uploaded so far (actual network bytes, 0 during prep)
+            upload_speed: Upload speed in bytes/sec (0 during prep phase)
+            stage: Upload substage ("connecting", "preparing", "uploading", "confirming")
+        """
         job = self.get_by_id(job_id)
         if not job:
             return None
@@ -1391,6 +1399,8 @@ class UploadJobRepository:
         job.bytes_uploaded = bytes_uploaded
         if upload_speed is not None:
             job.upload_speed = upload_speed
+        if stage is not None:
+            job.stage = stage
         if job.bytes_total and job.bytes_total > 0:
             job.progress_percent = (bytes_uploaded / job.bytes_total) * 100
         

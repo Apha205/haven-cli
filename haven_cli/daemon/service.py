@@ -38,7 +38,7 @@ class HavenDaemon:
         _shutdown_event: Event to signal shutdown
     
     Example:
-        daemon = HavenDaemon(config, max_concurrent=4)
+        daemon = HavenDaemon(config, max_concurrent=1)
         
         # Start daemon
         await daemon.start()
@@ -53,7 +53,7 @@ class HavenDaemon:
     def __init__(
         self,
         config: HavenConfig,
-        max_concurrent: int = 4,
+        max_concurrent: int = 1,
     ):
         """Initialize the daemon service.
         
@@ -193,13 +193,13 @@ async def run_daemon(config: HavenConfig, options: Dict[str, Any]) -> None:
     
     Example:
         await run_daemon(config, {
-            "max_concurrent": 4,
+            "max_concurrent": 1,
             "verbose": True,
         })
     """
     daemon = HavenDaemon(
         config,
-        max_concurrent=options.get("max_concurrent", 4),
+        max_concurrent=options.get("max_concurrent", 1),
     )
     
     # Set up signal handlers

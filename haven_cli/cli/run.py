@@ -60,7 +60,7 @@ def run(
         help="Run in background as daemon.",
     ),
     max_concurrent: int = typer.Option(
-        4,
+        1,
         "--max-concurrent",
         "-m",
         help="Maximum concurrent pipeline executions.",
@@ -292,7 +292,7 @@ def restart(
         help="Run in background as daemon.",
     ),
     max_concurrent: int = typer.Option(
-        4,
+        1,
         "--max-concurrent",
         "-m",
         help="Maximum concurrent pipeline executions.",

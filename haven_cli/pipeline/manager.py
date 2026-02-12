@@ -51,7 +51,7 @@ class PipelineManager:
     
     def __init__(
         self,
-        max_concurrent: int = 4,
+        max_concurrent: int = 1,
         event_bus: Optional[EventBus] = None,
         config: Optional[Dict[str, Any]] = None,
     ) -> None:
@@ -300,7 +300,7 @@ class PipelineBuilder:
         """Initialize the pipeline builder."""
         self._steps: List[PipelineStep] = []
         self._config: Dict[str, Any] = {}
-        self._max_concurrent: int = 4
+        self._max_concurrent: int = 1
     
     def with_max_concurrent(self, max_concurrent: int) -> "PipelineBuilder":
         """Set maximum concurrent pipelines.
@@ -435,7 +435,7 @@ class PipelineBuilder:
 
 
 def create_default_pipeline(
-    max_concurrent: int = 4,
+    max_concurrent: int = 1,
     config: Optional[Dict[str, Any]] = None,
 ) -> PipelineManager:
     """Create a pipeline manager with default steps.

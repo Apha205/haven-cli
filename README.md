@@ -220,3 +220,12 @@ Contributions are welcome! Please see our [Contributing Guide](CONTRIBUTING.md) 
 - 📖 [Documentation](docs/)
 - 🐛 [Issue Tracker](https://github.com/haven/haven-cli/issues)
 - 💬 [Discussions](https://github.com/haven/haven-cli/discussions)
+
+
+## Useful links
+
+- https://beryx.io/faucet
+- https://forest-explorer.chainsafe.dev/faucet/calibnet_usdfc
+- https://mendoza.hoodi.arkiv.network/faucet/
+- https://stg.usdfc.net/#/
+- https://pay.filecoin.cloud/console

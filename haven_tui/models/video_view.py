@@ -4,7 +4,7 @@ Aggregated view of video for TUI display from PipelineSnapshot.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional, List, Dict, Any
 
@@ -348,12 +348,22 @@ class VideoSorter:
         """Get the date added for sorting.
         
         Handles both VideoView (added_at) and VideoState (created_at).
+        Normalizes all datetimes to offset-aware to avoid comparison errors.
         """
+        dt = None
         if hasattr(video, 'added_at') and video.added_at is not None:
-            return video.added_at
+            dt = video.added_at
         elif hasattr(video, 'created_at') and video.created_at is not None:
-            return video.created_at
-        return datetime.min
+            dt = video.created_at
+        
+        if dt is not None:
+            # Ensure offset-aware: if naive, assume UTC
+            # This prevents TypeError when comparing offset-naive and offset-aware datetimes
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        
+        return datetime.min.replace(tzinfo=timezone.utc)
     
     def _get_title(self, video: Any) -> str:
         """Get the title for sorting."""

@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set
 
@@ -216,7 +216,7 @@ class EventLogWidget(DataTable):
         video_id = payload.get("video_id")
         
         return LogEntry(
-            timestamp=event.timestamp or datetime.utcnow(),
+            timestamp=event.timestamp or datetime.now(timezone.utc),
             event_type=event.event_type,
             message=message,
             level=level,
@@ -514,7 +514,7 @@ class EventLogWidget(DataTable):
         """
         with open(filepath, 'w') as f:
             f.write("# Haven Event Log Export\n")
-            f.write(f"# Generated: {datetime.utcnow().isoformat()}\n")
+            f.write(f"# Generated: {datetime.now(timezone.utc).isoformat()}\n")
             f.write("# timestamp | level | event_type | source | video_id | message\n")
             f.write("-" * 80 + "\n")
             
@@ -959,7 +959,7 @@ class EventLogScreen(Screen):
     
     def action_export(self) -> None:
         """Export log to file."""
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         default_path = f"haven_event_log_{timestamp}.log"
         
         def on_export_path(path: str) -> None:
@@ -1242,7 +1242,7 @@ class VideoLogsScreen(Screen):
     
     def action_export(self) -> None:
         """Export log to file."""
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         default_path = f"haven_video_{self.video_id}_log_{timestamp}.log"
         
         def on_export_path(path: str) -> None:

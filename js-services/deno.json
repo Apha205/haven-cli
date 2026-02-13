@@ -19,7 +19,7 @@
     "@lit-protocol/types": "npm:@lit-protocol/types@8.0.4",
     "ethers": "npm:ethers@6.16.0",
     "viem": "npm:viem@2.45.1",
-    "filecoin-pin": "npm:filecoin-pin@0.15.1"
+    "filecoin-pin": "npm:filecoin-pin@0.16.0"
   },
   "lint": {
     "rules": {

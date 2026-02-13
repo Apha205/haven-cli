@@ -25,16 +25,133 @@ import {
   createUnixfsCarBuilder,
   type CarBuildResult,
   type CreateCarOptions,
-} from 'npm:filecoin-pin@^0.14.0/core/unixfs';
+} from 'npm:filecoin-pin@^0.16.0/core/unixfs';
 import {
   initializeSynapse as initSynapse,
   createStorageContext,
   cleanupSynapseService,
-} from 'npm:filecoin-pin@^0.14.0/core/synapse';
-import { executeUpload, checkUploadReadiness } from 'npm:filecoin-pin@^0.14.0/core/upload';
+} from 'npm:filecoin-pin@^0.16.0/core/synapse';
+import { executeUpload, checkUploadReadiness } from 'npm:filecoin-pin@0.16.0/core/upload';
 
 // Import pino Logger type
 import type { Logger } from 'npm:pino@^10.0.0';
+import { ethers } from 'npm:ethers@^6.0.0';
+
+// ============================================================================
+// Custom Error Types
+// ============================================================================
+
+/**
+ * Error thrown when the actor/wallet has insufficient balance for the transaction.
+ * This is a non-retryable error that should be immediately propagated to the user.
+ */
+export class InsufficientBalanceError extends Error {
+  readonly available: bigint;
+  readonly required: bigint;
+  readonly address: string;
+  readonly token: string;
+
+  constructor(
+    message: string,
+    available: bigint,
+    required: bigint,
+    address: string,
+    token: string = 'FIL'
+  ) {
+    super(message);
+    this.name = 'InsufficientBalanceError';
+    this.available = available;
+    this.required = required;
+    this.address = address;
+    this.token = token;
+  }
+
+  /**
+   * Get a human-readable formatted version of the error details.
+   */
+  getDetails(): string {
+    const availableFormatted = ethers.formatEther(this.available);
+    const requiredFormatted = ethers.formatEther(this.required);
+    const shortfallFormatted = ethers.formatEther(this.required - this.available);
+    return (
+      `Insufficient funds for transaction. ` +
+      `Required: ${requiredFormatted} ${this.token}, ` +
+      `Available: ${availableFormatted} ${this.token}. ` +
+      `Shortfall: ${shortfallFormatted} ${this.token}. ` +
+      `Wallet: ${this.address}. ` +
+      `Please fund your wallet to proceed.`
+    );
+  }
+}
+
+/**
+ * Check if an error indicates insufficient balance/funds.
+ * This checks for various error patterns from Filecoin SDK and RPC.
+ */
+function isInsufficientBalanceError(error: unknown): boolean {
+  if (!error) return false;
+  
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  const lowerMessage = errorMessage.toLowerCase();
+  
+  // Check for InsufficientBalanceError type
+  if (error instanceof InsufficientBalanceError) return true;
+  
+  // Filecoin-specific patterns
+  const patterns = [
+    'actor balance less than needed',
+    'insufficient balance',
+    'insufficient funds',
+    'syserrsenderstateinvalid',
+    'retcode=2',
+    'retcode=\u0002',
+    'sender has insufficient funds',
+    'not enough funds',
+    'balance too low',
+  ];
+  
+  return patterns.some(pattern => lowerMessage.includes(pattern));
+}
+
+/**
+ * Extract balance information from Filecoin error messages.
+ * Returns null if unable to parse.
+ */
+function extractBalanceFromError(error: unknown): { available: bigint; required: bigint } | null {
+  if (!error) return null;
+  
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  
+  // Pattern: "Actor balance less than needed 0.002286105823689615 < 0.069999999883052615 RetCode=2"
+  // or similar variations
+  const balanceMatch = errorMessage.match(/(?:balance|needed)[\s:=]*([\d.]+)\s*[<:+-]?\s*(?:need|required|than)?[\s:=]*([\d.]+)/i);
+  if (balanceMatch) {
+    try {
+      // Try to parse as FIL amounts (may need conversion from attoFIL)
+      const val1 = balanceMatch[1].trim();
+      const val2 = balanceMatch[2].trim();
+      
+      // Convert to BigInt (attoFIL = 10^-18 FIL)
+      const parseFil = (val: string): bigint => {
+        if (val.includes('.')) {
+          // It's a decimal FIL amount
+          return ethers.parseEther(val);
+        }
+        // It might already be in attoFIL or wei
+        return BigInt(val.split('.')[0]);
+      };
+      
+      const available = parseFil(val1);
+      const required = parseFil(val2);
+      
+      return { available, required };
+    } catch {
+      // Parsing failed, return null
+    }
+  }
+  
+  return null;
+}
 
 // Deno type declaration
 declare const Deno: {
@@ -119,7 +236,7 @@ function createLogger(): Logger {
   return {
     level: isDebug ? 'debug' : 'info' as const,
     info: (msg: unknown, ...args: unknown[]) => {
-      console.log('[Synapse]', msg, ...args);
+      console.error('[Synapse]', msg, ...args);
     },
     warn: (msg: unknown, ...args: unknown[]) => {
       console.warn('[Synapse]', msg, ...args);
@@ -168,17 +285,19 @@ class SynapseWrapperImpl implements SynapseWrapper {
     // Support network mode for unified mainnet/testnet configuration
     const networkMode = (params.networkMode as string) ?? 'testnet';
     
-    // Default RPC URLs based on network mode
+    // Default RPC URLs based on network mode (WebSocket endpoints for Synapse SDK)
+    // These are fallback defaults - HAVEN_FILECOIN_RPC_URL env var takes precedence
     const defaultRpcUrl = networkMode === 'mainnet'
-      ? 'https://api.node.glif.io/rpc/v1'  // Filecoin mainnet
-      : 'https://api.calibration.node.glif.io/rpc/v1';  // Filecoin calibration testnet
+      ? 'wss://node.glif.io/apiw/gw/lotus/rpc/v1'  // Filecoin mainnet WebSocket
+      : 'wss://api.calibration.node.glif.io/rpc/v1';  // Filecoin calibration testnet WebSocket
     
     // params.endpoint and params.rpcUrl take precedence over networkMode defaults
     const endpoint = connectParams.endpoint ?? defaultRpcUrl;
     
     // Authentication: HAVEN_PRIVATE_KEY required for blockchain-based auth
     const privateKey = (params.privateKey as string) ?? Deno.env.get('HAVEN_PRIVATE_KEY') ?? '';
-    const rpcUrl = (params.rpcUrl as string) ?? Deno.env.get('FILECOIN_RPC_URL') ?? defaultRpcUrl;
+    // HAVEN_FILECOIN_RPC_URL is set by the Python bridge based on network configuration
+    const rpcUrl = (params.rpcUrl as string) ?? Deno.env.get('HAVEN_FILECOIN_RPC_URL') ?? Deno.env.get('FILECOIN_RPC_URL') ?? defaultRpcUrl;
     
     if (params.debug) {
       console.error(`[synapse-wrapper] Network mode: ${networkMode}, using RPC: ${rpcUrl}`);
@@ -380,7 +499,8 @@ class SynapseWrapperImpl implements SynapseWrapper {
 
     // Initialize Synapse SDK
     const privateKey = uploadParams.privateKey ?? this._privateKey ?? Deno.env.get('HAVEN_PRIVATE_KEY');
-    const rpcUrl = uploadParams.rpcUrl ?? this._rpcUrl ?? Deno.env.get('FILECOIN_RPC_URL') ?? 'https://api.calibration.node.glif.io/rpc/v1';
+    // HAVEN_FILECOIN_RPC_URL is set by the Python bridge based on network configuration
+    const rpcUrl = uploadParams.rpcUrl ?? this._rpcUrl ?? Deno.env.get('HAVEN_FILECOIN_RPC_URL') ?? Deno.env.get('FILECOIN_RPC_URL') ?? 'wss://api.calibration.node.glif.io/rpc/v1';
 
     if (!privateKey) {
       throw new Error('Private key is required for Filecoin upload. Set HAVEN_PRIVATE_KEY environment variable or provide in params.');
@@ -435,7 +555,9 @@ class SynapseWrapperImpl implements SynapseWrapper {
       });
 
       // Read CAR file
+      console.error('[synapse-wrapper] Reading CAR file from:', carBuildResult.carPath);
       const carBytes = await Deno.readFile(carBuildResult.carPath);
+      console.error('[synapse-wrapper] CAR file read complete, size:', carBytes.length);
 
       onProgress?.({
         bytesUploaded: 0,
@@ -444,12 +566,23 @@ class SynapseWrapperImpl implements SynapseWrapper {
       });
 
       // Check upload readiness (payment validation)
-      const readiness = await checkUploadReadiness({
-        synapse: synapse as any,
-        fileSize: carBytes.length,
-        autoConfigureAllowances: true,
-      });
+      console.error('[synapse-wrapper] Starting checkUploadReadiness...');
+      console.error('[synapse-wrapper] RPC URL:', rpcUrl);
+      console.error('[synapse-wrapper] File size:', carBytes.length);
+      
+      // Wrap checkUploadReadiness with timeout to prevent indefinite hanging on RPC calls
+      const readiness = await this._withTimeout(
+        'checkUploadReadiness',
+        checkUploadReadiness({
+          synapse: synapse as any,
+          fileSize: carBytes.length,
+          autoConfigureAllowances: true,
+        }),
+        60000 // 60 second timeout for readiness check
+      );
 
+      console.error('[synapse-wrapper] Readiness check complete, status:', readiness.status);
+      
       if (readiness.status === 'blocked') {
         const errorMessage =
           readiness.validation?.errorMessage ||
@@ -466,11 +599,16 @@ class SynapseWrapperImpl implements SynapseWrapper {
       });
 
       // Create storage context
-      const { storage, providerInfo } = await (createStorageContext as any)(
-        synapse,
-        this._logger
+      console.error('[synapse-wrapper] Starting createStorageContext...');
+      
+      // Wrap createStorageContext with timeout to prevent indefinite hanging
+      const { storage, providerInfo } = await this._withTimeout(
+        'createStorageContext',
+        (createStorageContext as any)(synapse, this._logger),
+        60000 // 60 second timeout for storage context creation
       );
 
+      console.error('[synapse-wrapper] Storage context created, provider:', providerInfo?.address || 'unknown');
       const synapseService = { synapse, storage, providerInfo };
 
       onProgress?.({
@@ -479,37 +617,18 @@ class SynapseWrapperImpl implements SynapseWrapper {
         percentage: 35,
       });
 
-      // Execute upload with progress tracking
+      // Execute upload with progress tracking and timeout
       // Parse the root CID string to a CID object
       const rootCidString = carBuildResult.rootCid.toString();
-      const uploadResult = await executeUpload(synapseService as any, carBytes, rootCidString as any, {
-        logger: this._logger,
-        contextId: filePath.split('/').pop() || 'upload',
-        onProgress: (event: { type: string }) => {
-          if (event.type === 'onUploadComplete') {
-            onProgress?.({
-              bytesUploaded: carBytes.length,
-              totalBytes: carBytes.length,
-              percentage: 80,
-            });
-          } else if (event.type === 'onPieceAdded') {
-            onProgress?.({
-              bytesUploaded: carBytes.length,
-              totalBytes: carBytes.length,
-              percentage: 90,
-            });
-          } else if (event.type === 'onPieceConfirmed') {
-            onProgress?.({
-              bytesUploaded: carBytes.length,
-              totalBytes: carBytes.length,
-              percentage: 95,
-            });
-          }
-        },
-        ipniValidation: {
-          enabled: true,
-        },
-      });
+      
+      // Upload with timeout and retry logic
+      const uploadResult = await this._executeUploadWithTimeout(
+        synapseService as any,
+        carBytes,
+        rootCidString,
+        filePath,
+        onProgress
+      );
 
       // Clean up CAR file
       try {
@@ -541,6 +660,169 @@ class SynapseWrapperImpl implements SynapseWrapper {
       const errorMessage = error instanceof Error ? error.message : String(error);
       throw new Error(`Upload failed: ${errorMessage}`);
     }
+  }
+
+  /**
+   * Wrap a promise with a timeout to prevent indefinite hanging on network calls.
+   * 
+   * This is critical for RPC calls that may hang if the Filecoin RPC endpoint
+   * is unreachable, rate-limited, or down.
+   * 
+   * @param operationName - Name of the operation for error messages
+   * @param promise - The promise to wrap
+   * @param timeoutMs - Timeout in milliseconds
+   * @returns The result of the promise
+   * @throws Error if the timeout is exceeded
+   */
+  private async _withTimeout<T>(
+    operationName: string,
+    promise: Promise<T>,
+    timeoutMs: number
+  ): Promise<T> {
+    let timeoutId: ReturnType<typeof setTimeout>;
+    
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(new Error(
+          `${operationName} timed out after ${timeoutMs}ms. ` +
+          `This may be due to Filecoin RPC connectivity issues. ` +
+          `Check your network connection and RPC endpoint status.`
+        ));
+      }, timeoutMs);
+    });
+    
+    try {
+      const result = await Promise.race([promise, timeoutPromise]);
+      clearTimeout(timeoutId!);
+      return result;
+    } catch (error) {
+      clearTimeout(timeoutId!);
+      throw error;
+    }
+  }
+
+  /**
+   * Execute upload with timeout and retry logic.
+   * 
+   * The filecoin-pin SDK can timeout during upload (especially during addPieces)
+   * due to network congestion or RPC issues. This wrapper adds:
+   * - Configurable timeout per attempt (default 180s)
+   * - Automatic retry on timeout errors (max 3 attempts)
+   * - Better error messages for debugging
+   * - Fail-fast on insufficient balance errors (non-retryable)
+   */
+  private async _executeUploadWithTimeout(
+    synapseService: any,
+    carBytes: Uint8Array,
+    rootCidString: string,
+    filePath: string,
+    onProgress?: ProgressCallback,
+    maxRetries: number = 3,
+    timeoutMs: number = 1800000 // 30 minutes per attempt
+  ): Promise<any> {
+    let lastError: Error | null = null;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        this._logger.info(`Upload attempt ${attempt}/${maxRetries} for ${filePath}`);
+        
+        // Create a promise that rejects after the timeout
+        let timeoutId: ReturnType<typeof setTimeout>;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(() => {
+            reject(new Error(`Upload timeout after ${timeoutMs}ms (attempt ${attempt})`));
+          }, timeoutMs);
+        });
+        // Clean up timeout if timeoutPromise is rejected (but not by the timer)
+        timeoutPromise.catch(() => {
+          if (timeoutId) clearTimeout(timeoutId);
+        });
+        
+        // Execute upload with race against timeout
+        const uploadPromise = executeUpload(synapseService, carBytes, rootCidString as any, {
+          logger: this._logger,
+          contextId: filePath.split('/').pop() || 'upload',
+          onProgress: (event: { type: string }) => {
+            if (event.type === 'onUploadComplete') {
+              onProgress?.({
+                bytesUploaded: carBytes.length,
+                totalBytes: carBytes.length,
+                percentage: 80,
+              });
+            } else if (event.type === 'onPieceAdded') {
+              onProgress?.({
+                bytesUploaded: carBytes.length,
+                totalBytes: carBytes.length,
+                percentage: 90,
+              });
+            } else if (event.type === 'onPieceConfirmed') {
+              onProgress?.({
+                bytesUploaded: carBytes.length,
+                totalBytes: carBytes.length,
+                percentage: 95,
+              });
+            }
+          },
+          ipniValidation: {
+            enabled: true,
+          },
+        });
+        
+        // Race between upload and timeout
+        const result = await Promise.race([uploadPromise, timeoutPromise]);
+        this._logger.info(`Upload succeeded on attempt ${attempt}`);
+        return result;
+        
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        lastError = error instanceof Error ? error : new Error(errorMessage);
+        
+        // CRITICAL: Check for insufficient balance error - DO NOT RETRY
+        // These errors indicate the wallet lacks funds and retrying wastes time
+        if (isInsufficientBalanceError(error)) {
+          this._logger.error(`Upload failed with insufficient balance: ${errorMessage}`);
+          // Extract and log balance details if available
+          const balanceInfo = extractBalanceFromError(error);
+          if (balanceInfo) {
+            this._logger.error(
+              `Balance details - Available: ${ethers.formatEther(balanceInfo.available)} FIL, ` +
+              `Required: ${ethers.formatEther(balanceInfo.required)} FIL`
+            );
+          }
+          // Re-throw immediately without retry
+          throw error;
+        }
+        
+        // Check if it's a timeout error
+        const isTimeoutError = 
+          errorMessage.includes('timeout') ||
+          errorMessage.includes('TIMEOUT') ||
+          errorMessage.includes('StorageContext addPieces failed');
+        
+        if (isTimeoutError) {
+          this._logger.warn(`Upload attempt ${attempt} timed out: ${errorMessage}`);
+          
+          if (attempt < maxRetries) {
+            const delayMs = attempt * 5000; // 5s, 10s, 15s backoff
+            this._logger.info(`Retrying upload in ${delayMs}ms...`);
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+            continue;
+          }
+        } else {
+          // Non-timeout error, don't retry
+          this._logger.error(`Upload failed with non-retryable error: ${errorMessage}`);
+          throw error;
+        }
+      }
+    }
+    
+    // All retries exhausted
+    throw new Error(
+      `Upload failed after ${maxRetries} attempts. ` +
+      `Last error: ${lastError?.message}. ` +
+      `This may be due to network congestion or RPC issues. ` +
+      `Consider increasing timeout or checking Filecoin network status.`
+    );
   }
 
   async getStatus(params: Record<string, unknown>): Promise<SynapseStatusResult> {

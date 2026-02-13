@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Callable, ClassVar, List, Optional, Any
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from textual.widgets import DataTable, Static, Header, Footer, Input
 from textual.containers import Container, Horizontal
@@ -360,9 +360,10 @@ class VideoListWidget(DataTable):
                 videos = [v for v in videos if not v.has_failed]
         
         # Sort by activity and creation time
+        # Use offset-aware minimum datetime to avoid comparison errors
         videos.sort(key=lambda v: (
             not v.is_active,  # Active videos first
-            v.created_at or datetime.min,
+            v.created_at or datetime.min.replace(tzinfo=timezone.utc),
         ))
         
         # Build row data
@@ -395,7 +396,7 @@ class VideoListWidget(DataTable):
         
         # Update the table
         self._update_table()
-        self._last_refresh = datetime.now()
+        self._last_refresh = datetime.now(timezone.utc)
     
     def set_filter_state(self, filter_state: FilterState) -> None:
         """Set the current filter state and refresh.
@@ -955,6 +956,12 @@ class VideoListScreen(Screen):
     def _refresh_data(self) -> None:
         """Refresh the video list data."""
         try:
+            # First, refresh state from database to get latest data
+            if self.state_manager is not None:
+                # Use create_task to run the async refresh in the background
+                import asyncio
+                asyncio.create_task(self.state_manager.refresh_from_database())
+            
             video_list = self.query_one(VideoListWidget)
             video_list.refresh_data()
             self._update_header()
@@ -1065,6 +1072,7 @@ class VideoListScreen(Screen):
                 # Get repositories from the app if available
                 job_repo = getattr(self.app, 'job_history_repo', None)
                 snapshot_repo = getattr(self.app, 'snapshot_repo', None)
+                speed_history_repo = getattr(self.app, 'speed_history_repo', None)
                 
                 # Get state_manager from the app (for real-time state fallback)
                 state_manager = getattr(self.app, 'state_manager', None)
@@ -1075,6 +1083,7 @@ class VideoListScreen(Screen):
                     job_repo=job_repo,
                     snapshot_repo=snapshot_repo,
                     state_manager=state_manager,
+                    speed_history_repo=speed_history_repo,
                 )
                 self.app.push_screen(detail_screen)
             except Exception as e:
@@ -1360,7 +1369,7 @@ class VideoListScreen(Screen):
         
         # Generate default filename with timestamp
         from datetime import datetime
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         default_path = f"haven_export_{timestamp}.json"
         
         # For now, use default path (in a full implementation, we'd show a file dialog)
@@ -1425,6 +1434,12 @@ class VideoListScreen(Screen):
     def _refresh_data(self) -> None:
         """Refresh the video list data."""
         try:
+            # First, refresh state from database to get latest data
+            if self.state_manager is not None:
+                # Use create_task to run the async refresh in the background
+                import asyncio
+                asyncio.create_task(self.state_manager.refresh_from_database())
+            
             video_list = self.query_one(VideoListWidget)
             video_list.refresh_data()
             self._update_header()

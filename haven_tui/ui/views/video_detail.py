@@ -16,7 +16,7 @@ from textual.reactive import reactive
 from textual.screen import Screen
 from textual.binding import Binding
 
-from haven_tui.data.repositories import JobHistoryRepository, PipelineSnapshotRepository
+from haven_tui.data.repositories import JobHistoryRepository, PipelineSnapshotRepository, SpeedHistoryRepository
 from haven_tui.models.video_view import VideoView, PipelineStage
 from haven_tui.ui.components.speed_graph import SpeedGraphComponent
 from haven_tui.ui.views.event_log import VideoLogsScreen
@@ -26,6 +26,10 @@ from haven_cli.database.models import (
 
 # Import StateManager for fallback when database records don't exist yet
 from haven_tui.core.state_manager import StateManager, VideoState
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from haven_tui.core.state_manager import StateManager
 
 
 @dataclass
@@ -503,6 +507,7 @@ class VideoDetailScreen(Screen):
         job_repo: Optional[JobHistoryRepository] = None,
         snapshot_repo: Optional[PipelineSnapshotRepository] = None,
         state_manager: Optional[StateManager] = None,
+        speed_history_repo: Optional[SpeedHistoryRepository] = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the video detail screen.
@@ -511,7 +516,8 @@ class VideoDetailScreen(Screen):
             video_id: ID of the video to display
             job_repo: Repository for accessing job history
             snapshot_repo: Repository for accessing pipeline snapshots
-            state_manager: StateManager for accessing real-time state (fallback)
+            state_manager: StateManager for accessing real-time state (fallback and speed history)
+            speed_history_repo: Repository for speed history data (database fallback)
             **kwargs: Additional arguments passed to Screen
         """
         super().__init__(**kwargs)
@@ -519,6 +525,7 @@ class VideoDetailScreen(Screen):
         self._job_repo = job_repo
         self._snapshot_repo = snapshot_repo
         self._state_manager = state_manager
+        self._speed_history_repo = speed_history_repo
         self._show_graph: bool = False
     
     def compose(self) -> None:
@@ -538,7 +545,11 @@ class VideoDetailScreen(Screen):
                     yield ResultsWidget(id="results")
                 
                 with Container(id="graph-section"):
-                    graph = SpeedGraphComponent(id="speed-graph")
+                    graph = SpeedGraphComponent(
+                        id="speed-graph",
+                        state_manager=self._state_manager,
+                        speed_history_repo=self._speed_history_repo,
+                    )
                     graph.display = False
                     yield graph
             
@@ -580,8 +591,10 @@ class VideoDetailScreen(Screen):
         # Set up speed graph
         if video and video.current_stage.value in ("download", "encrypt", "upload"):
             graph = self.query_one("#speed-graph", SpeedGraphComponent)
-            graph.video_id = self.video_id
-            graph.current_stage = video.current_stage.value
+            graph.set_video(self.video_id, video.current_stage.value)
+            # State manager was already passed in constructor, but ensure it's set
+            if self._state_manager:
+                graph.set_state_manager(self._state_manager)
     
     def _load_pipeline_history(self) -> None:
         """Load and display pipeline history from job tables.
@@ -1103,6 +1116,9 @@ class VideoDetailScreen(Screen):
         graph.display = self._show_graph
         if self._show_graph:
             graph.refresh_graph()
+            graph.start_auto_refresh(interval=1.0)
+        else:
+            graph.stop_auto_refresh()
 
 
 class VideoDetailView:
@@ -1115,7 +1131,9 @@ class VideoDetailView:
         >>> view = VideoDetailView(
         ...     video_id=1,
         ...     job_repo=job_repo,
-        ...     snapshot_repo=snapshot_repo
+        ...     snapshot_repo=snapshot_repo,
+        ...     state_manager=state_manager,
+        ...     speed_history_repo=speed_history_repo,
         ... )
         >>> screen = view.create_screen()
     
@@ -1123,7 +1141,8 @@ class VideoDetailView:
         video_id: ID of the video to display
         job_repo: Repository for accessing job history
         snapshot_repo: Repository for accessing pipeline snapshots
-        state_manager: StateManager for accessing real-time state
+        state_manager: StateManager for accessing real-time state and speed history
+        speed_history_repo: Repository for speed history data (database fallback)
         screen: The VideoDetailScreen instance
     """
     
@@ -1133,6 +1152,7 @@ class VideoDetailView:
         job_repo: Optional[JobHistoryRepository] = None,
         snapshot_repo: Optional[PipelineSnapshotRepository] = None,
         state_manager: Optional[StateManager] = None,
+        speed_history_repo: Optional[SpeedHistoryRepository] = None,
     ) -> None:
         """Initialize the video detail view.
         
@@ -1140,12 +1160,14 @@ class VideoDetailView:
             video_id: ID of the video to display
             job_repo: Repository for accessing job history
             snapshot_repo: Repository for accessing pipeline snapshots
-            state_manager: StateManager for accessing real-time state
+            state_manager: StateManager for accessing real-time state and speed history
+            speed_history_repo: Repository for speed history data (database fallback)
         """
         self.video_id = video_id
         self.job_repo = job_repo
         self.snapshot_repo = snapshot_repo
         self.state_manager = state_manager
+        self.speed_history_repo = speed_history_repo
         self.screen: Optional[VideoDetailScreen] = None
     
     def create_screen(self) -> VideoDetailScreen:
@@ -1159,6 +1181,7 @@ class VideoDetailView:
             job_repo=self.job_repo,
             snapshot_repo=self.snapshot_repo,
             state_manager=self.state_manager,
+            speed_history_repo=self.speed_history_repo,
         )
         return self.screen
     

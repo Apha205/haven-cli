@@ -26,6 +26,7 @@ from haven_cli.database.connection import get_db_session
 from haven_cli.database.repositories import VideoRepository
 from haven_cli.js_runtime.bridge import JSRuntimeBridge
 from haven_cli.js_runtime.manager import JSBridgeManager
+from haven_cli.js_runtime.protocol import JSONRPCError, JSONRPCErrorCode
 from haven_cli.pipeline.context import (
     EncryptionMetadata,
     PipelineContext,
@@ -198,15 +199,124 @@ class UploadStep(ConditionalStep):
                     await asyncio.sleep(delay)
         
         # All retries exhausted or permanent error
+        # Format user-friendly error message for insufficient balance
+        error_message = str(last_error)
+        error_details: Dict[str, Any] = {}
+        error_code = "UPLOAD_ERROR"
+        
+        # Check if this is an insufficient balance error
+        if self._is_insufficient_balance_error(last_error):
+            error_code = "INSUFFICIENT_BALANCE"
+            # Try to extract balance details from JSON-RPC error data
+            available, required = self._extract_balance_details(last_error)
+            if available and required:
+                error_message = (
+                    f"Insufficient funds for transaction. "
+                    f"Required: {required} FIL, "
+                    f"Available: {available} FIL. "
+                    f"Please fund your wallet to proceed."
+                )
+                error_details = {
+                    "available_fil": available,
+                    "required_fil": required,
+                    "shortfall_fil": str(float(required) - float(available)),
+                }
+            else:
+                error_message = (
+                    f"Insufficient funds for transaction. "
+                    f"Please fund your wallet to proceed. "
+                    f"Original error: {error_message}"
+                )
+        
         await self._emit_event(EventType.UPLOAD_FAILED, context, {
             "video_path": context.video_path,
-            "error": str(last_error),
+            "error": error_message,
+            "error_code": error_code,
+            **error_details,
         })
         
-        return StepResult.fail(
-            self.name,
-            StepError.from_exception(last_error, code="UPLOAD_ERROR"),
+        step_error = StepError.from_exception(
+            last_error, 
+            code=error_code,
+            category=ErrorCategory.PERMANENT if error_code == "INSUFFICIENT_BALANCE" else ErrorCategory.UNKNOWN,
         )
+        step_error.message = error_message  # Use formatted message
+        step_error.details.update(error_details)
+        
+        return StepResult.fail(self.name, step_error)
+    
+    def _is_insufficient_balance_error(self, error: Exception) -> bool:
+        """Check if the error is an insufficient balance error.
+        
+        Args:
+            error: The exception to check
+            
+        Returns:
+            True if this is an insufficient balance error
+        """
+        error_str = str(error).lower()
+        error_type = type(error).__name__.lower()
+        
+        # Check for JSON-RPC error with specific code
+        if isinstance(error, JSONRPCError):
+            if error.code == JSONRPCErrorCode.INSUFFICIENT_BALANCE:
+                return True
+        
+        # Check for balance error patterns in message
+        balance_patterns = [
+            "insufficient balance",
+            "insufficient funds",
+            "actor balance less than needed",
+            "syserrsenderstateinvalid",
+            "retcode=2",
+            "not enough funds",
+            "sender has insufficient funds",
+            "insufficient usdfc",
+        ]
+        for pattern in balance_patterns:
+            if pattern in error_str:
+                return True
+        
+        return False
+    
+    def _extract_balance_details(self, error: Exception) -> tuple[str | None, str | None]:
+        """Extract available and required balance from error.
+        
+        Args:
+            error: The exception to extract from
+            
+        Returns:
+            Tuple of (available, required) as strings, or (None, None) if not found
+        """
+        # Try to extract from JSON-RPC error data
+        if isinstance(error, JSONRPCError) and error.data:
+            data = error.data
+            if isinstance(data, dict):
+                available = data.get("available")
+                required = data.get("required")
+                if available and required:
+                    # Convert from wei/attoFIL to FIL if they look like big integers
+                    try:
+                        available_fil = float(available) / 1e18
+                        required_fil = float(required) / 1e18
+                        return f"{available_fil:.6f}", f"{required_fil:.6f}"
+                    except (ValueError, TypeError):
+                        return str(available), str(required)
+        
+        # Try to parse from error message
+        import re
+        error_message = str(error)
+        
+        # Pattern: "Actor balance less than needed 0.002286105823689615 < 0.069999999883052615"
+        match = re.search(
+            r"(?:balance|needed)[\s:=]*([\d.]+)\s*[<:+-]?\s*(?:need|required|than)?[\s:=]*([\d.]+)",
+            error_message,
+            re.IGNORECASE
+        )
+        if match:
+            return match.group(1), match.group(2)
+        
+        return None, None
     
     async def _do_upload(self, context: PipelineContext) -> StepResult:
         """Perform the actual upload.
@@ -650,6 +760,7 @@ class UploadStep(ConditionalStep):
         
         Network errors are transient and can be retried.
         Configuration errors are permanent.
+        Insufficient balance errors are permanent (user must fund wallet).
         
         Args:
             error: The exception to categorize
@@ -659,6 +770,29 @@ class UploadStep(ConditionalStep):
         """
         error_str = str(error).lower()
         error_type = type(error).__name__.lower()
+        
+        # CRITICAL: Insufficient balance errors are PERMANENT - don't retry
+        # These require user action (funding wallet) and retrying wastes time
+        balance_error_patterns = [
+            "insufficient balance",
+            "insufficient funds",
+            "actor balance less than needed",
+            "syserrsenderstateinvalid",
+            "retcode=2",
+            "not enough funds",
+            "sender has insufficient funds",
+            "insufficient usdfc",
+        ]
+        for pattern in balance_error_patterns:
+            if pattern in error_str:
+                logger.warning(f"Detected insufficient balance error (non-retryable): {error}")
+                return ErrorCategory.PERMANENT
+        
+        # Check for JSON-RPC insufficient balance error code
+        if isinstance(error, JSONRPCError):
+            if error.code == JSONRPCErrorCode.INSUFFICIENT_BALANCE:
+                logger.warning(f"Detected JSON-RPC insufficient balance error (non-retryable): {error}")
+                return ErrorCategory.PERMANENT
         
         # Permanent errors (no retry) - check first for wrapped errors
         permanent_patterns = [

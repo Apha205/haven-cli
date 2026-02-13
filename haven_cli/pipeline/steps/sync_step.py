@@ -13,12 +13,15 @@ The step is conditional and can be skipped via the arkiv_sync_enabled option.
 Task 12: Writes progress to SyncJob and PipelineSnapshot tables.
 """
 
+import logging
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from haven_cli.database.connection import get_db_session
 from haven_cli.database.repositories import VideoRepository
+
+logger = logging.getLogger(__name__)
 from haven_cli.pipeline.context import PipelineContext
 from haven_cli.pipeline.events import EventType
 from haven_cli.pipeline.results import ErrorCategory, StepError, StepResult
@@ -278,8 +281,6 @@ class SyncStep(ConditionalStep):
                         repo.update(video, arkiv_entity_key=entity_key)
             except Exception as e:
                 # Log but don't fail the step
-                import logging
-                logger = logging.getLogger(__name__)
                 logger.warning("Failed to update database with Arkiv entity key: %s", e)
             return
         
@@ -291,8 +292,6 @@ class SyncStep(ConditionalStep):
                     repo.update(video, arkiv_entity_key=entity_key)
         except Exception as e:
             # Log but don't fail the step
-            import logging
-            logger = logging.getLogger(__name__)
             logger.warning("Failed to update database with Arkiv entity key: %s", e)
     
     def _categorize_error(self, error: Exception) -> ErrorCategory:
@@ -345,8 +344,6 @@ class SyncStep(ConditionalStep):
             context: Pipeline context
             reason: Skip reason
         """
-        import logging
-        logger = logging.getLogger(__name__)
         logger.info("Sync step skipped: %s", reason)
         
         # Create a skipped SyncJob record so TUI shows correct status

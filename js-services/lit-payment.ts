@@ -176,15 +176,15 @@ export async function verifyPaymentSetup(
 ): Promise<void> {
   // Only check payments for mainnet networks
   if (network === 'naga-dev' || network === 'datil-dev') {
-    console.log('[Lit Payment] Dev network - skipping capacity credit check');
+    console.error('[Lit Payment] Dev network - skipping capacity credit check');
     return;
   }
 
   const wallet = createCapacityCreditWallet(privateKey);
   const walletAddress = wallet.address;
 
-  console.log(`[Lit Payment] Checking payment setup for wallet: ${walletAddress}`);
-  console.log(`[Lit Payment] Network: ${network}`);
+  console.error(`[Lit Payment] Checking payment setup for wallet: ${walletAddress}`);
+  console.error(`[Lit Payment] Network: ${network}`);
 
   // Check LITKEY balance for gas
   const litKeyBalance = await checkLitKeyBalance(walletAddress);
@@ -218,9 +218,9 @@ export async function mintCapacityCredits(
 ): Promise<void> {
   const wallet = createCapacityCreditWallet(privateKey);
 
-  console.log(`[Lit Payment] Minting capacity credits for wallet: ${wallet.address}`);
-  console.log(`[Lit Payment] Requests per day: ${requestsPerDay}`);
-  console.log(`[Lit Payment] Days until expiration: ${daysUntilExpiration}`);
+  console.error(`[Lit Payment] Minting capacity credits for wallet: ${wallet.address}`);
+  console.error(`[Lit Payment] Requests per day: ${requestsPerDay}`);
+  console.error(`[Lit Payment] Days until expiration: ${daysUntilExpiration}`);
 
   // Full implementation would:
   // 1. Import @lit-protocol/contracts-sdk

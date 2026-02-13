@@ -1,22 +1,25 @@
 """Speed Graph Component for Haven TUI.
 
-ASCII speed graph using data from speed_history table.
+ASCII speed graph using data from speed_history table or StateManager.
 Adapted from aria2tui's speed graph for haven-tui.
 """
 
 from __future__ import annotations
 
 import time
-from typing import List, Optional, Any
+from typing import List, Optional, Any, TYPE_CHECKING
 from dataclasses import dataclass
 
 from rich.text import Text
 from textual.widgets import Static
 from textual.reactive import reactive
-from textual.visual import visualize
+from textual.timer import Timer
 
 from haven_tui.data.repositories import SpeedHistoryRepository
 from haven_tui.models.video_view import PipelineStage
+
+if TYPE_CHECKING:
+    from haven_tui.core.state_manager import StateManager
 
 # Optional plotille import - fallback to simple ASCII if not available
 try:
@@ -87,6 +90,7 @@ class SpeedGraphComponent(Static):
     def __init__(
         self,
         speed_history_repo: Optional[SpeedHistoryRepository] = None,
+        state_manager: Optional["StateManager"] = None,
         width: int = 60,
         height: int = 15,
         history_seconds: int = 60,
@@ -95,7 +99,8 @@ class SpeedGraphComponent(Static):
         """Initialize the speed graph component.
         
         Args:
-            speed_history_repo: Repository for querying speed history
+            speed_history_repo: Repository for querying speed history (fallback)
+            state_manager: StateManager for in-memory speed history (preferred)
             width: Width of the graph in characters
             height: Height of the graph in characters
             history_seconds: How many seconds of history to display
@@ -103,11 +108,14 @@ class SpeedGraphComponent(Static):
         """
         super().__init__(**kwargs)
         self.speed_history_repo = speed_history_repo
+        self.state_manager = state_manager
         self.graph_width = width
         self.graph_height = height
         self.history_seconds = history_seconds
         self._speed_data: List[SpeedDataPoint] = []
         self._stats = SpeedStats(0, 0, 0, 0)
+        self._refresh_timer: Optional[Timer] = None
+        self._refresh_interval: float = 1.0  # Default 1 second refresh interval
     
     def set_repository(self, repo: SpeedHistoryRepository) -> None:
         """Set the speed history repository.
@@ -116,6 +124,14 @@ class SpeedGraphComponent(Static):
             repo: SpeedHistoryRepository instance
         """
         self.speed_history_repo = repo
+    
+    def set_state_manager(self, state_manager: "StateManager") -> None:
+        """Set the state manager for in-memory speed history.
+        
+        Args:
+            state_manager: StateManager instance
+        """
+        self.state_manager = state_manager
     
     def set_video(self, video_id: int, stage: str = "download") -> None:
         """Set the video to display speed graph for.
@@ -129,37 +145,97 @@ class SpeedGraphComponent(Static):
         self.refresh_graph()
     
     def refresh_graph(self) -> None:
-        """Refresh the graph data from repository."""
-        if self.video_id is None or self.speed_history_repo is None:
+        """Refresh the graph data from state manager or repository."""
+        if self.video_id is None:
             self._speed_data = []
             self._update_stats()
-            self.update(self._get_empty_text())
+            self._safe_update(self._get_empty_text())
             return
         
-        # Get speed history from database (last N minutes to ensure coverage)
-        minutes = max(1, (self.history_seconds // 60) + 1)
-        history = self.speed_history_repo.get_speed_history(
-            video_id=self.video_id,
-            stage=self.current_stage,
-            minutes=minutes,
-        )
+        # Try StateManager first (has real-time in-memory data)
+        if self.state_manager is not None:
+            self._refresh_from_state_manager()
+            # If StateManager returned no data, fall back to repository
+            if not self._speed_data and self.speed_history_repo is not None:
+                self._refresh_from_repository()
+        # Fall back to repository (database) if state manager not available
+        elif self.speed_history_repo is not None:
+            self._refresh_from_repository()
+        else:
+            self._speed_data = []
+            self._update_stats()
+            self._safe_update(self._get_empty_text())
+    
+    def _safe_update(self, content: Text) -> None:
+        """Safely update the widget content, handling cases where app context isn't available.
         
-        # Convert to SpeedDataPoint list
-        now = time.time()
-        cutoff = now - self.history_seconds
-        
-        self._speed_data = []
-        for entry in history:
-            ts = entry.timestamp.timestamp()
-            if ts >= cutoff:
+        Args:
+            content: The text content to display
+        """
+        try:
+            self.update(content)
+        except Exception:
+            # App context not available (e.g., during testing or before mount)
+            # This is okay - the data is still stored in _speed_data
+            pass
+    
+    def _refresh_from_state_manager(self) -> None:
+        """Refresh graph data from StateManager's in-memory speed history."""
+        try:
+            history = self.state_manager.get_speed_history(
+                video_id=self.video_id,
+                stage=self.current_stage,
+                seconds=self.history_seconds,
+            )
+            
+            self._speed_data = []
+            for ts, speed, progress in history:
                 self._speed_data.append(SpeedDataPoint(
                     timestamp=ts,
-                    speed=float(entry.speed),
-                    progress=entry.progress,
+                    speed=speed,
+                    progress=progress,
                 ))
-        
-        self._update_stats()
-        self.update(self._get_text())
+            
+            self._update_stats()
+            self._safe_update(self._get_text())
+        except Exception:
+            # Handle any errors gracefully
+            self._speed_data = []
+            self._update_stats()
+            self._safe_update(self._get_empty_text())
+    
+    def _refresh_from_repository(self) -> None:
+        """Refresh graph data from SpeedHistoryRepository (database)."""
+        try:
+            # Get speed history from database (last N minutes to ensure coverage)
+            minutes = max(1, (self.history_seconds // 60) + 1)
+            history = self.speed_history_repo.get_speed_history(
+                video_id=self.video_id,
+                stage=self.current_stage,
+                minutes=minutes,
+            )
+            
+            # Convert to SpeedDataPoint list
+            now = time.time()
+            cutoff = now - self.history_seconds
+            
+            self._speed_data = []
+            for entry in history:
+                ts = entry.timestamp.timestamp()
+                if ts >= cutoff:
+                    self._speed_data.append(SpeedDataPoint(
+                        timestamp=ts,
+                        speed=float(entry.speed),
+                        progress=entry.progress,
+                    ))
+            
+            self._update_stats()
+            self._safe_update(self._get_text())
+        except Exception:
+            # Handle any errors gracefully
+            self._speed_data = []
+            self._update_stats()
+            self._safe_update(self._get_empty_text())
     
     def _update_stats(self) -> None:
         """Update speed statistics from current data."""
@@ -470,6 +546,40 @@ class SpeedGraphComponent(Static):
         """Watch for stage changes and refresh."""
         if self.video_id is not None:
             self.refresh_graph()
+    
+    def start_auto_refresh(self, interval: float = 1.0) -> None:
+        """Start auto-refreshing the graph data.
+        
+        This should be called when the graph becomes visible to ensure
+        the display stays up-to-date with live download progress.
+        
+        Args:
+            interval: Refresh interval in seconds (default: 1.0)
+        """
+        self.stop_auto_refresh()  # Stop any existing timer
+        self._refresh_interval = interval
+        try:
+            self._refresh_timer = self.set_interval(interval, self.refresh_graph)
+        except Exception:
+            # App context may not be available
+            pass
+    
+    def stop_auto_refresh(self) -> None:
+        """Stop auto-refreshing the graph data.
+        
+        This should be called when the graph is hidden or the widget
+        is being destroyed to prevent unnecessary updates.
+        """
+        if self._refresh_timer is not None:
+            try:
+                self._refresh_timer.stop()
+            except Exception:
+                pass
+            self._refresh_timer = None
+    
+    def on_unmount(self) -> None:
+        """Clean up when the widget is unmounted."""
+        self.stop_auto_refresh()
 
 
 class SpeedGraphWidget(Static):
@@ -493,16 +603,21 @@ class SpeedGraphWidget(Static):
     def __init__(
         self,
         speed_history_repo: Optional[SpeedHistoryRepository] = None,
+        state_manager: Optional["StateManager"] = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the speed graph widget.
         
         Args:
-            speed_history_repo: Repository for querying speed history
+            speed_history_repo: Repository for querying speed history (fallback)
+            state_manager: StateManager for in-memory speed history (preferred)
             **kwargs: Additional arguments passed to Static
         """
         super().__init__(**kwargs)
-        self._graph_component = SpeedGraphComponent(speed_history_repo)
+        self._graph_component = SpeedGraphComponent(
+            speed_history_repo=speed_history_repo,
+            state_manager=state_manager,
+        )
     
     def compose(self) -> None:
         """Compose the widget layout."""
@@ -524,3 +639,11 @@ class SpeedGraphWidget(Static):
             repo: SpeedHistoryRepository instance
         """
         self._graph_component.set_repository(repo)
+    
+    def set_state_manager(self, state_manager: "StateManager") -> None:
+        """Set the state manager for in-memory speed history.
+        
+        Args:
+            state_manager: StateManager instance
+        """
+        self._graph_component.set_state_manager(state_manager)

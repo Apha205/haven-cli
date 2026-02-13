@@ -24,6 +24,8 @@ from .protocol import (
     JSRuntimeMethods,
 )
 
+from haven_cli.services.blockchain_network import get_filecoin_rpc_url
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,6 +61,9 @@ class RuntimeConfig:
     
     # Whether to enable debug logging in the JS runtime
     debug: bool = False
+    
+    # Network mode for blockchain configuration (mainnet/testnet)
+    network_mode: str = "testnet"
 
 
 @dataclass
@@ -207,16 +212,24 @@ class JSRuntimeBridge:
         request = self._protocol.create_request(method, params)
         timeout = timeout or self._config.request_timeout
         
-        # Create future for response
-        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        # Create future for response using get_running_loop() for proper async handling
+        # This ensures compatibility with APScheduler and other event loop environments
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            raise RuntimeError("No running event loop - call must be made from async context")
+        
+        future: asyncio.Future = loop.create_future()
         self._pending_futures[request.id] = future
         
         try:
             # Send request
             await self._send_request(request)
             
-            # Wait for response
-            response = await asyncio.wait_for(future, timeout=timeout)
+            # Wait for response with periodic yielding to prevent event loop blocking
+            # This is critical when running under APScheduler with max_instances=1
+            # to ensure other tasks (like health checks, TUI updates) can progress
+            response = await self._wait_for_response(future, timeout)
             
             # Check for error
             response.raise_for_error()
@@ -228,6 +241,55 @@ class JSRuntimeBridge:
             raise JSONRPCError.timeout_error(timeout)
         finally:
             self._pending_futures.pop(request.id, None)
+    
+    async def _wait_for_response(
+        self,
+        future: asyncio.Future,
+        timeout: Optional[float] = None
+    ) -> Any:
+        """Wait for a response future with proper event loop yielding.
+        
+        This method ensures the event loop remains responsive during long-running
+        JS operations (like CAR file creation and Filecoin upload). It periodically
+        yields control back to the event loop to allow APScheduler and TUI updates
+        to proceed while waiting for the JS runtime response.
+        
+        Args:
+            future: The future to wait for
+            timeout: Optional timeout in seconds
+            
+        Returns:
+            The future result (JSONRPCResponse)
+            
+        Raises:
+            asyncio.TimeoutError: If the timeout is reached
+        """
+        if timeout is None:
+            timeout = self._config.request_timeout
+        
+        # Wait for the future with a shorter polling interval to allow
+        # other tasks (health checks, TUI updates) to run during long operations
+        start_time = asyncio.get_running_loop().time()
+        
+        while not future.done():
+            # Check for timeout
+            elapsed = asyncio.get_running_loop().time() - start_time
+            if elapsed >= timeout:
+                raise asyncio.TimeoutError()
+            
+            # Yield control to the event loop - this is the critical fix
+            # that prevents blocking APScheduler while waiting for long-running
+            # JS operations like CAR file creation and Filecoin upload
+            try:
+                await asyncio.wait_for(asyncio.shield(future), timeout=0.1)
+                # If we get here, the future completed
+                break
+            except asyncio.TimeoutError:
+                # Expected - continue polling
+                pass
+        
+        # Return the result (or raise exception if future failed)
+        return future.result()
     
     async def notify(
         self,
@@ -345,6 +407,12 @@ class JSRuntimeBridge:
         import os
         env = dict(os.environ)  # Start with parent environment
         env.update(self._config.env_vars)  # Overlay filtered vars
+        
+        # Set Filecoin RPC URL for Synapse SDK based on network mode
+        # This ensures the SDK uses the correct WebSocket endpoint (wss://) instead of HTTP
+        filecoin_rpc_url = get_filecoin_rpc_url(self._config.network_mode)
+        env["HAVEN_FILECOIN_RPC_URL"] = filecoin_rpc_url
+        
         if self._config.debug:
             env["DEBUG"] = "1"
         
@@ -376,7 +444,24 @@ class JSRuntimeBridge:
                     break
                 
                 try:
-                    await self._handle_message(line.decode().strip())
+                    decoded = line.decode().strip()
+                    if not decoded:
+                        continue
+                    
+                    # Check for Synapse/Lit SDK logs from underlying packages (filecoin-pin, etc.)
+                    # These are non-JSON log messages that should be captured
+                    sdk_log_tags = ('[Synapse]', '[Lit]', '[Lit Payment]', '[lit-wrapper]', '[filecoin-pin]', '[haven-js]', '[browser-shim]')
+                    if any(tag in decoded for tag in sdk_log_tags):
+                        logger.info(f"JS: {decoded}")
+                        continue
+                    
+                    # Check for other common log patterns from JS dependencies
+                    if decoded.startswith('INFO:') or decoded.startswith('DEBUG:') or decoded.startswith('WARN:') or decoded.startswith('ERROR:'):
+                        logger.info(f"JS: {decoded}")
+                        continue
+                    
+                    # Try to handle as JSON-RPC message
+                    await self._handle_message(decoded)
                 except Exception as e:
                     logger.error(f"Error handling message: {e}")
                     
@@ -537,7 +622,8 @@ class JSRuntimeBridge:
 
 async def create_bridge(
     services_path: Optional[Path] = None,
-    debug: bool = False
+    debug: bool = False,
+    network_mode: str = "testnet"
 ) -> JSRuntimeBridge:
     """
     Create and start a JS runtime bridge.
@@ -545,13 +631,15 @@ async def create_bridge(
     Args:
         services_path: Path to the JS services directory
         debug: Enable debug mode
+        network_mode: Network mode for blockchain configuration ('mainnet' or 'testnet')
     
     Returns:
         A started JSRuntimeBridge instance
     """
     config = RuntimeConfig(
         services_path=services_path,
-        debug=debug
+        debug=debug,
+        network_mode=network_mode
     )
     bridge = JSRuntimeBridge(config)
     await bridge.start()

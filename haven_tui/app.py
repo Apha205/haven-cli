@@ -204,6 +204,9 @@ class HavenTUIApp(App[None]):
             self.job_history_repo = JobHistoryRepository(self.pipeline_interface._db_session)
             self.snapshot_repo = PipelineSnapshotRepository(self.pipeline_interface._db_session)
         
+        # Expose speed_history_repo on the app for screens to access
+        self.speed_history_repo = self.speed_history_repo
+        
         # Initialize event consumer - skip for now as it requires EventBus
         # The StateManager already handles events directly from PipelineInterface
         self.event_consumer = None

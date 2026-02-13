@@ -289,11 +289,11 @@ def load_config(
     
     Priority (highest to lowest):
     1. Environment variables
-    2. Config file
+    2. Config file (from --config, HAVEN_CONFIG_DIR, or ~/.config/haven/config.toml)
     3. Default values
     
     Args:
-        config_path: Path to config file (default: ~/.config/haven/config.toml)
+        config_path: Path to config file (default: auto-detect)
         env_prefix: Prefix for environment variables
     
     Returns:
@@ -318,6 +318,39 @@ def load_config(
     config = _load_from_env(config, env_prefix)
     
     return config
+
+
+def get_config_path(
+    config_path: Optional[Path] = None,
+    env_prefix: str = "HAVEN_"
+) -> Optional[Path]:
+    """
+    Get the effective config file path that would be used.
+    
+    Returns the path to the config file that exists and would be loaded,
+    or None if no config file exists (default values would be used).
+    
+    Args:
+        config_path: Explicit path to config file (optional)
+        env_prefix: Prefix for environment variables
+    
+    Returns:
+        Path to the config file that exists, or None
+    """
+    # Determine config file path
+    if config_path is None:
+        # Check for environment variable override
+        env_config_dir = os.environ.get(f"{env_prefix}CONFIG_DIR")
+        if env_config_dir:
+            config_path = Path(env_config_dir) / DEFAULT_CONFIG_FILE
+        else:
+            config_path = DEFAULT_CONFIG_DIR / DEFAULT_CONFIG_FILE
+    
+    # Return the path only if it exists
+    if config_path.exists():
+        return config_path
+    
+    return None
 
 
 def _load_from_file(path: Path, config: HavenConfig) -> HavenConfig:

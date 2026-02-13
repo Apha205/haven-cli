@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Optional, List, Dict, Any, Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from textual.widgets import Static, DataTable, Header, Footer, Button
 from textual.containers import Container, Horizontal, Vertical, Grid
@@ -581,7 +581,7 @@ class AnalyticsDashboardWidget(Container):
             # Update charts
             self._update_charts(summary)
             
-            self._last_refresh = datetime.now()
+            self._last_refresh = datetime.now(timezone.utc)
             
         except Exception as e:
             # Log error but don't crash

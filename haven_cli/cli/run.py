@@ -86,13 +86,16 @@ def run(
         haven run --daemon --max-concurrent 8
         haven run --verbose
     """
-    from haven_cli.config import load_config, ensure_directories
+    from haven_cli.config import load_config, ensure_directories, get_config_path
     from haven_cli.daemon.pid import PIDFile
     from haven_cli.daemon.service import run_daemon, daemonize
 
     # Load configuration
     config = load_config(config_file)
     ensure_directories(config)
+    
+    # Determine which config file is actually being used
+    effective_config_path = config_file or get_config_path()
     
     # Set up PID file
     pid_file = PIDFile(config.data_dir / "haven.pid")
@@ -112,7 +115,10 @@ def run(
     console.print("[bold green]Starting Haven daemon...[/bold green]")
     
     if verbose:
-        console.print(f"Config: {config_file or 'default'}")
+        if effective_config_path:
+            console.print(f"Config: {effective_config_path}")
+        else:
+            console.print("Config: default (no config file found)")
         console.print(f"Max concurrent pipelines: {max_concurrent}")
         console.print(f"Daemon mode: {daemon}")
         console.print(f"Data directory: {config.data_dir}")
@@ -120,6 +126,11 @@ def run(
     # Set up logging before daemonization
     log_file = config.data_dir / "daemon.log" if daemon else None
     _setup_logging(verbose, log_file)
+    
+    # Set DEBUG environment variable for JS runtime if verbose mode
+    if verbose:
+        os.environ['DEBUG'] = '1'
+        os.environ['LOG_LEVEL'] = 'debug'
     
     if daemon:
         # Check if daemon mode is supported

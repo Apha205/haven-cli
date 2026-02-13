@@ -89,7 +89,7 @@ _NETWORK_PRESETS: dict[NetworkMode, NetworkConfig] = {
     NetworkMode.MAINNET: NetworkConfig(
         mode=NetworkMode.MAINNET,
         lit_network="datil",  # Lit Protocol mainnet
-        filecoin_rpc_url="https://api.node.glif.io/rpc/v1",
+        filecoin_rpc_url="wss://wss.node.glif.io/apigw/lotus/rpc/v1",
         filecoin_chain_id=314,  # Filecoin mainnet
         arkiv_rpc_url="https://mainnet.arkiv.network/rpc",  # Arkiv mainnet
         arkiv_chain_name="Arkiv Mainnet",
@@ -98,7 +98,7 @@ _NETWORK_PRESETS: dict[NetworkMode, NetworkConfig] = {
     NetworkMode.TESTNET: NetworkConfig(
         mode=NetworkMode.TESTNET,
         lit_network="datil-dev",  # Lit Protocol testnet (can also use "naga" or "naga-dev")
-        filecoin_rpc_url="https://api.calibration.node.glif.io/rpc/v1",
+        filecoin_rpc_url="wss://wss.calibration.node.glif.io/apigw/lotus/rpc/v1",
         filecoin_chain_id=314159,  # Filecoin Calibration testnet
         arkiv_rpc_url="https://mendoza.hoodi.arkiv.network/rpc",  # Arkiv on Hoodi testnet
         arkiv_chain_name="Arkiv Hoodi Testnet",

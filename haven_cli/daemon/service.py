@@ -81,8 +81,23 @@ class HavenDaemon:
         """
         logger.info("Starting Haven daemon...")
         
-        # Initialize JS bridge
+        # Initialize JS bridge with debug mode if configured
         from haven_cli.js_runtime.manager import JSBridgeManager
+        from haven_cli.config import get_config
+        
+        config = get_config()
+        debug_mode = getattr(config, 'debug', False) or os.environ.get('DEBUG') == '1' or os.environ.get('LOG_LEVEL', '').lower() == 'debug'
+        network_mode = getattr(config.blockchain, 'network_mode', 'testnet')
+        
+        # Configure JS bridge with network mode for correct Filecoin RPC endpoint
+        JSBridgeManager.get_instance().configure(
+            debug=debug_mode,
+            network_mode=network_mode,
+        )
+        
+        if debug_mode:
+            logger.info("Enabling JS bridge debug mode")
+        
         await JSBridgeManager.get_instance().get_bridge()
         logger.info("JS Bridge initialized")
         

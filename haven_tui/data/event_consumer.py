@@ -118,6 +118,13 @@ class TUIStateManager:
         video.stage_speed = int(speed)
         video.stage_eta = eta
         
+        # Update file_size from metadata if available (e.g., from download progress)
+        if metadata:
+            bytes_total = metadata.get('bytes_total')
+            if bytes_total and bytes_total > 0:
+                video.file_size = int(bytes_total)
+                self._notify_change(video_id, 'file_size', video.file_size)
+        
         # Update speed history for graphs
         if speed > 0:
             self._add_speed_sample(video_id, speed)

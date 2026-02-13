@@ -276,13 +276,13 @@ class TestJSBridgeManagerHealthChecks:
         
         with patch.object(manager, '_restart_bridge', new_callable=AsyncMock) as mock_restart:
             # Run health check once
-            manager._shutdown_event = asyncio.Event()
+            manager._get_shutdown_event().clear()
             
             # Set up to stop after one iteration
             async def stop_after_delay():
                 await asyncio.sleep(0.15)
                 manager._running = False
-                manager._shutdown_event.set()
+                manager._get_shutdown_event().set()
             
             await asyncio.gather(
                 manager._health_check_loop(),
@@ -306,12 +306,12 @@ class TestJSBridgeManagerHealthChecks:
         manager._running = True
         
         with patch.object(manager, '_restart_bridge', new_callable=AsyncMock) as mock_restart:
-            manager._shutdown_event = asyncio.Event()
+            manager._get_shutdown_event().clear()
             
             async def stop_after_delay():
                 await asyncio.sleep(0.15)
                 manager._running = False
-                manager._shutdown_event.set()
+                manager._get_shutdown_event().set()
             
             await asyncio.gather(
                 manager._health_check_loop(),
@@ -336,12 +336,12 @@ class TestJSBridgeManagerHealthChecks:
         manager._running = True
         
         with patch.object(manager, '_restart_bridge', new_callable=AsyncMock) as mock_restart:
-            manager._shutdown_event = asyncio.Event()
+            manager._get_shutdown_event().clear()
             
             async def stop_after_delay():
                 await asyncio.sleep(0.15)
                 manager._running = False
-                manager._shutdown_event.set()
+                manager._get_shutdown_event().set()
             
             await asyncio.gather(
                 manager._health_check_loop(),
@@ -566,6 +566,7 @@ class TestConvenienceFunctions:
                 health_check_interval=120.0,
                 runtime_executable=None,
                 debug=True,
+                network_mode='testnet',
             )
 
 
@@ -617,7 +618,7 @@ class TestJSBridgeManagerReconnection:
         manager = JSBridgeManager.get_instance()
         
         with patch.object(manager, '_create_bridge', new_callable=AsyncMock) as mock_create:
-            with patch.object(manager, '_bridge_lock'):  # Skip actual locking
+            with patch.object(manager, '_get_bridge_lock', return_value=asyncio.Lock()):  # Skip actual locking
                 with patch('asyncio.sleep', new_callable=AsyncMock) as mock_sleep:
                     mock_create.return_value = MagicMock()
                     

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import weakref
 from pathlib import Path
 from typing import Any, Optional, Callable
@@ -30,6 +31,12 @@ class JSBridgeManager:
     - Graceful shutdown with proper cleanup
     - Context manager support for easy usage
     
+    Event Loop Safety:
+        This manager is designed to work correctly when accessed from different
+        event loops (e.g., main daemon loop and APScheduler job loops). It
+        automatically detects event loop changes and recreates synchronization
+        primitives as needed.
+    
     Example:
         # Get bridge via singleton manager
         manager = JSBridgeManager.get_instance()
@@ -42,7 +49,7 @@ class JSBridgeManager:
     """
     
     _instance: Optional['JSBridgeManager'] = None
-    _lock: asyncio.Lock = asyncio.Lock()
+    _lock: Optional[asyncio.Lock] = None
     
     def __new__(cls) -> 'JSBridgeManager':
         """Create new instance with proper initialization."""
@@ -56,11 +63,17 @@ class JSBridgeManager:
             return
             
         self._bridge: Optional[JSRuntimeBridge] = None
-        self._bridge_lock = asyncio.Lock()
+        
+        # Event-loop-aware synchronization primitives
+        # We track the loop that created each primitive and recreate if needed
+        self._bridge_lock: Optional[asyncio.Lock] = None
+        self._bridge_lock_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._shutdown_event: Optional[asyncio.Event] = None
+        self._shutdown_event_loop: Optional[asyncio.AbstractEventLoop] = None
+        
         self._running = False
         self._health_task: Optional[asyncio.Task] = None
         self._health_check_interval = 120.0  # seconds - longer than typical Filecoin uploads
-        self._shutdown_event = asyncio.Event()
         
         # Configuration
         self._config: Optional[RuntimeConfig] = None
@@ -74,7 +87,124 @@ class JSBridgeManager:
         # Weak reference set to track active callers
         self._active_callers: weakref.WeakSet = weakref.WeakSet()
         
+        # Thread safety for non-async operations
+        self._thread_lock = threading.Lock()
+        
         self._initialized = True
+    
+    @classmethod
+    def _get_lock(cls) -> asyncio.Lock:
+        """Get or create the class-level lock lazily.
+        
+        This ensures the lock is created in the current event loop,
+        avoiding 'bound to a different event loop' errors.
+        """
+        if cls._lock is None:
+            cls._lock = asyncio.Lock()
+        return cls._lock
+    
+    def _get_bridge_lock(self) -> asyncio.Lock:
+        """Get or create the bridge lock lazily with event loop safety.
+        
+        This method ensures that:
+        1. The lock is created in the current event loop if it doesn't exist
+        2. The lock is recreated if the event loop has changed
+        3. Thread-safe access for non-async contexts
+        
+        Returns:
+            An asyncio.Lock bound to the current event loop
+        """
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No event loop running - this shouldn't happen in async context
+            # Return existing lock or create new one (will fail if actually used)
+            if self._bridge_lock is None:
+                raise RuntimeError("No event loop running - bridge lock cannot be created")
+            return self._bridge_lock
+        
+        # Check if we need to create or recreate the lock
+        if (self._bridge_lock is None or 
+            self._bridge_lock_loop is None or 
+            self._bridge_lock_loop != current_loop or
+            self._bridge_lock_loop.is_closed()):
+            
+            with self._thread_lock:
+                # Double-check after acquiring lock
+                if (self._bridge_lock is None or 
+                    self._bridge_lock_loop is None or 
+                    self._bridge_lock_loop != current_loop or
+                    self._bridge_lock_loop.is_closed()):
+                    
+                    old_loop = self._bridge_lock_loop
+                    self._bridge_lock = asyncio.Lock()
+                    self._bridge_lock_loop = current_loop
+                    
+                    if old_loop is not None and old_loop != current_loop:
+                        logger.debug(
+                            f"Bridge lock recreated for new event loop "
+                            f"(old: {id(old_loop)}, new: {id(current_loop)})"
+                        )
+        
+        return self._bridge_lock
+    
+    def _get_shutdown_event(self) -> asyncio.Event:
+        """Get or create the shutdown event lazily with event loop safety.
+        
+        This method ensures that:
+        1. The event is created in the current event loop if it doesn't exist
+        2. The event is recreated if the event loop has changed
+        3. Thread-safe access for non-async contexts
+        
+        Returns:
+            An asyncio.Event bound to the current event loop
+        """
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No event loop running - this shouldn't happen in async context
+            # Return existing event or raise error
+            if self._shutdown_event is None:
+                raise RuntimeError("No event loop running - shutdown event cannot be created")
+            return self._shutdown_event
+        
+        # Check if we need to create or recreate the event
+        if (self._shutdown_event is None or 
+            self._shutdown_event_loop is None or 
+            self._shutdown_event_loop != current_loop or
+            self._shutdown_event_loop.is_closed()):
+            
+            with self._thread_lock:
+                # Double-check after acquiring lock
+                if (self._shutdown_event is None or 
+                    self._shutdown_event_loop is None or 
+                    self._shutdown_event_loop != current_loop or
+                    self._shutdown_event_loop.is_closed()):
+                    
+                    old_loop = self._shutdown_event_loop
+                    
+                    # Preserve the old event's state if recreating
+                    old_is_set = False
+                    if self._shutdown_event is not None:
+                        try:
+                            old_is_set = self._shutdown_event.is_set()
+                        except RuntimeError:
+                            # Old event is bound to different loop, can't check
+                            pass
+                    
+                    self._shutdown_event = asyncio.Event()
+                    self._shutdown_event_loop = current_loop
+                    
+                    if old_is_set:
+                        self._shutdown_event.set()
+                    
+                    if old_loop is not None and old_loop != current_loop:
+                        logger.debug(
+                            f"Shutdown event recreated for new event loop "
+                            f"(old: {id(old_loop)}, new: {id(current_loop)})"
+                        )
+        
+        return self._shutdown_event
     
     @classmethod
     def get_instance(cls) -> 'JSBridgeManager':
@@ -83,6 +213,9 @@ class JSBridgeManager:
         Returns:
             The singleton JSBridgeManager instance.
         """
+        # Note: We don't need to acquire the lock here because
+        # instance creation is idempotent and Python's GIL ensures
+        # thread safety for the reference assignment
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
@@ -104,6 +237,7 @@ class JSBridgeManager:
         health_check_interval: float = 120.0,
         runtime_executable: Optional[str] = None,
         debug: bool = False,
+        network_mode: str = "testnet",
     ) -> None:
         """Configure the bridge manager.
         
@@ -117,6 +251,7 @@ class JSBridgeManager:
             health_check_interval: Interval between health checks
             runtime_executable: Specific runtime to use (auto-detect if None)
             debug: Enable debug mode
+            network_mode: Network mode for blockchain configuration ('mainnet' or 'testnet')
         """
         if self._bridge is not None and self._bridge.is_ready:
             raise RuntimeError("Cannot configure while bridge is running. Call shutdown() first.")
@@ -141,8 +276,9 @@ class JSBridgeManager:
             request_timeout=request_timeout,
             env_vars=env_vars,
             debug=debug,
+            network_mode=network_mode,
         )
-        logger.debug(f"JSBridgeManager configured with health_check_interval={health_check_interval}s")
+        logger.debug(f"JSBridgeManager configured with health_check_interval={health_check_interval}s, network_mode={network_mode}")
     
     async def get_bridge(self) -> JSRuntimeBridge:
         """Get or create a bridge instance.
@@ -150,13 +286,16 @@ class JSBridgeManager:
         This method ensures a single bridge instance is created and reused.
         If the bridge is not ready, it will be created and started.
         
+        This method is event-loop-aware and will work correctly when called
+        from different event loops (e.g., main daemon loop vs APScheduler jobs).
+        
         Returns:
             A ready-to-use JSRuntimeBridge instance.
             
         Raises:
             RuntimeError: If bridge creation fails
         """
-        async with self._bridge_lock:
+        async with self._get_bridge_lock():
             if self._bridge is None or not self._bridge.is_ready:
                 self._bridge = await self._create_bridge()
                 self._start_health_checks()
@@ -206,18 +345,26 @@ class JSBridgeManager:
             startup_timeout=30.0,
             request_timeout=60.0,
             env_vars=env_vars,
+            network_mode="testnet",
         )
     
     def _start_health_checks(self) -> None:
         """Start the health check background task."""
         if self._health_task is None or self._health_task.done():
             self._running = True
-            self._shutdown_event.clear()
-            self._health_task = asyncio.create_task(
-                self._health_check_loop(),
-                name="js_bridge_health_check"
-            )
-            logger.debug("Health check loop started")
+            self._get_shutdown_event().clear()
+            
+            # Create the health check task in the current event loop
+            try:
+                current_loop = asyncio.get_running_loop()
+                self._health_task = current_loop.create_task(
+                    self._health_check_loop(),
+                    name="js_bridge_health_check"
+                )
+                logger.debug(f"Health check loop started in event loop {id(current_loop)}")
+            except RuntimeError:
+                logger.error("Cannot start health checks: no running event loop")
+                raise
     
     async def _health_check_loop(self) -> None:
         """Periodically check bridge health.
@@ -227,13 +374,38 @@ class JSBridgeManager:
         
         Health checks are skipped when there are pending operations to avoid
         restarting the bridge during long-running operations (e.g., Filecoin uploads).
+        
+        This method handles event loop changes gracefully by detecting when
+        it's running in a different loop than expected.
         """
+        try:
+            # Track which loop started this health check
+            start_loop = asyncio.get_running_loop()
+            logger.debug(f"Health check loop running in event loop {id(start_loop)}")
+        except RuntimeError:
+            logger.error("Health check loop cannot run without an event loop")
+            return
+        
         while self._running:
             try:
+                # Check if we're still in the same event loop
+                try:
+                    current_loop = asyncio.get_running_loop()
+                    if current_loop != start_loop or current_loop.is_closed():
+                        logger.warning(
+                            f"Health check loop detected event loop change "
+                            f"(started in {id(start_loop)}, now in {id(current_loop)}). "
+                            f"Stopping this health check loop."
+                        )
+                        break
+                except RuntimeError:
+                    logger.warning("Health check loop: no event loop available, stopping")
+                    break
+                
                 # Wait for the health check interval or shutdown signal
                 try:
                     await asyncio.wait_for(
-                        self._shutdown_event.wait(),
+                        self._get_shutdown_event().wait(),
                         timeout=self._health_check_interval
                     )
                     # Shutdown event was set
@@ -251,12 +423,16 @@ class JSBridgeManager:
                 
                 # Perform health check
                 if self._bridge and self._bridge.is_ready:
-                    is_healthy = await self._bridge.ping()
-                    if not is_healthy:
-                        logger.warning("Health check failed: bridge not responsive")
+                    try:
+                        is_healthy = await self._bridge.ping()
+                        if not is_healthy:
+                            logger.warning("Health check failed: bridge not responsive")
+                            await self._restart_bridge()
+                        else:
+                            logger.debug("Health check passed")
+                    except Exception as ping_error:
+                        logger.warning(f"Health check ping failed: {ping_error}")
                         await self._restart_bridge()
-                    else:
-                        logger.debug("Health check passed")
                         
             except asyncio.CancelledError:
                 logger.debug("Health check loop cancelled")
@@ -265,7 +441,10 @@ class JSBridgeManager:
                 logger.warning(f"Health check failed with exception: {e}")
                 self._last_error = e
                 # Don't let health check exceptions stop the loop
-                await asyncio.sleep(1)
+                try:
+                    await asyncio.sleep(1)
+                except asyncio.CancelledError:
+                    break
         
         logger.debug("Health check loop stopped")
     
@@ -274,8 +453,11 @@ class JSBridgeManager:
         
         This stops the current bridge (if any) and creates a new one.
         It implements exponential backoff to avoid rapid restart loops.
+        
+        This method is event-loop-aware and will work correctly when called
+        from different event loops.
         """
-        async with self._bridge_lock:
+        async with self._get_bridge_lock():
             logger.info("Restarting JS Runtime Bridge...")
             self._reconnect_count += 1
             
@@ -315,6 +497,9 @@ class JSBridgeManager:
         This is a convenience method that gets the bridge and calls a method.
         For automatic retry on failure, use call_with_retry().
         
+        This method is event-loop-aware and will work correctly when called
+        from different event loops.
+        
         Args:
             method: The method name to call
             params: Optional parameters for the method
@@ -342,6 +527,9 @@ class JSBridgeManager:
         
         This method implements exponential backoff for retries and handles
         bridge restart on "not ready" errors.
+        
+        This method is event-loop-aware and will work correctly when called
+        from different event loops.
         
         Args:
             method: The method name to call
@@ -413,12 +601,17 @@ class JSBridgeManager:
         
         This stops the health check loop and shuts down the bridge.
         Should be called during application shutdown.
+        
+        This method handles event loop changes gracefully.
         """
         logger.info("Shutting down JS Bridge Manager...")
         self._running = False
         
         # Signal shutdown to health check loop
-        self._shutdown_event.set()
+        try:
+            self._get_shutdown_event().set()
+        except RuntimeError as e:
+            logger.debug(f"Could not set shutdown event: {e}")
         
         # Cancel health check task
         if self._health_task and not self._health_task.done():
@@ -427,15 +620,30 @@ class JSBridgeManager:
                 await self._health_task
             except asyncio.CancelledError:
                 pass
+            except RuntimeError as e:
+                # Task may be bound to a different event loop
+                logger.debug(f"Could not await health task: {e}")
             self._health_task = None
         
         # Stop the bridge
-        async with self._bridge_lock:
+        try:
+            async with self._get_bridge_lock():
+                if self._bridge:
+                    try:
+                        await self._bridge.stop()
+                    except Exception as e:
+                        logger.warning(f"Error during bridge shutdown: {e}")
+                    finally:
+                        self._bridge = None
+        except RuntimeError as e:
+            # Lock may be bound to a different event loop
+            logger.warning(f"Could not acquire bridge lock during shutdown: {e}")
+            # Try to stop bridge without lock as last resort
             if self._bridge:
                 try:
                     await self._bridge.stop()
-                except Exception as e:
-                    logger.warning(f"Error during bridge shutdown: {e}")
+                except Exception as bridge_error:
+                    logger.warning(f"Error stopping bridge without lock: {bridge_error}")
                 finally:
                     self._bridge = None
         
@@ -567,6 +775,7 @@ def configure_bridge(
     health_check_interval: float = 120.0,
     runtime_executable: Optional[str] = None,
     debug: bool = False,
+    network_mode: str = "testnet",
 ) -> None:
     """Configure the bridge manager (synchronous).
     
@@ -580,6 +789,7 @@ def configure_bridge(
         health_check_interval: Interval between health checks
         runtime_executable: Specific runtime to use
         debug: Enable debug mode
+        network_mode: Network mode for blockchain configuration ('mainnet' or 'testnet')
     """
     manager = JSBridgeManager.get_instance()
     manager.configure(
@@ -589,4 +799,5 @@ def configure_bridge(
         health_check_interval=health_check_interval,
         runtime_executable=runtime_executable,
         debug=debug,
+        network_mode=network_mode,
     )

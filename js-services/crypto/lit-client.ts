@@ -61,7 +61,7 @@ export async function initLitClient(network: string = 'naga'): Promise<LitClient
         storage: createMemoryStorage(appName, networkName),
       });
 
-      console.log(`[Lit] Connected to Lit network (${network}) - SDK v8`);
+      console.error(`[Lit] Connected to Lit network (${network}) - SDK v8`);
       return litClient;
     } catch (error) {
       litClient = null;
@@ -88,7 +88,7 @@ export async function disconnectLitClient(): Promise<void> {
     litClient = null;
     authManager = null;
     initPromise = null;
-    console.log('[Lit] Disconnected from Lit network');
+    console.error('[Lit] Disconnected from Lit network');
   }
 }
 

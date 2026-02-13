@@ -487,7 +487,7 @@ def create_default_pipeline(
     # Check flags from context options (CLI flags) or config file
     # CLI flags take precedence if they're in context options
     vlm_enabled = get_config_value("vlm_enabled", False)
-    encryption_enabled = get_config_value("encryption_enabled", False)
+    encryption_enabled = get_config_value("encryption_enabled", True)
     upload_enabled = get_config_value("upload_enabled", True)
     sync_enabled = get_config_value("sync_enabled", False) or get_config_value("arkiv_sync_enabled", False)
     

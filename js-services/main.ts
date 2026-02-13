@@ -18,7 +18,7 @@ import type {
 } from './types.ts';
 import { ErrorCodes } from './types.ts';
 import { createLitWrapper, type LitWrapper } from './lit-wrapper.ts';
-import { createSynapseWrapper, type SynapseWrapper } from './synapse-wrapper.ts';
+import { createSynapseWrapper, type SynapseWrapper, InsufficientBalanceError } from './synapse-wrapper.ts';
 
 // ============================================================================
 // Runtime State
@@ -58,6 +58,67 @@ function createErrorResponse(
     error,
     id,
   };
+}
+
+/**
+ * Check if an error indicates insufficient balance/funds.
+ * This checks for various error patterns from Filecoin SDK and RPC.
+ */
+function isInsufficientBalanceError(error: unknown): boolean {
+  if (!error) return false;
+  
+  // Check for InsufficientBalanceError type
+  if (error instanceof InsufficientBalanceError) return true;
+  if (error instanceof Error && error.name === 'InsufficientBalanceError') return true;
+  
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  const lowerMessage = errorMessage.toLowerCase();
+  
+  // Filecoin-specific patterns
+  const patterns = [
+    'actor balance less than needed',
+    'insufficient balance',
+    'insufficient funds',
+    'syserrsenderstateinvalid',
+    'retcode=2',
+    'sender has insufficient funds',
+    'not enough funds',
+    'balance too low',
+    'insufficient usdfc',
+  ];
+  
+  return patterns.some(pattern => lowerMessage.includes(pattern));
+}
+
+/**
+ * Extract balance information from error messages.
+ * Returns null if unable to parse.
+ */
+function extractBalanceInfo(error: unknown): { available?: string; required?: string; address?: string } | null {
+  if (!error) return null;
+  
+  // If it's an InsufficientBalanceError, extract structured data
+  if (error instanceof InsufficientBalanceError) {
+    return {
+      available: error.available.toString(),
+      required: error.required.toString(),
+      address: error.address,
+    };
+  }
+  
+  // Try to parse from error message
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  
+  // Pattern: "Actor balance less than needed 0.002286105823689615 < 0.069999999883052615 RetCode=2"
+  const balanceMatch = errorMessage.match(/(?:balance|needed)[\s:=]*([\d.]+)\s*[<:+-]?\s*(?:need|required|than)?[\s:=]*([\d.]+)/i);
+  if (balanceMatch) {
+    return {
+      available: balanceMatch[1].trim(),
+      required: balanceMatch[2].trim(),
+    };
+  }
+  
+  return null;
 }
 
 function sendResponse(response: JSONRPCResponse): void {
@@ -305,7 +366,22 @@ async function handleRequest(request: JSONRPCRequest): Promise<void> {
   } catch (error) {
     if (!isNotification) {
       const message = error instanceof Error ? error.message : String(error);
-      sendResponse(createErrorResponse(id!, ErrorCodes.INTERNAL_ERROR, message));
+      
+      // Check for insufficient balance error - use dedicated error code
+      if (isInsufficientBalanceError(error)) {
+        const balanceInfo = extractBalanceInfo(error);
+        sendResponse(createErrorResponse(
+          id!,
+          ErrorCodes.INSUFFICIENT_BALANCE,
+          message,
+          {
+            errorType: 'InsufficientBalanceError',
+            ...balanceInfo,
+          }
+        ));
+      } else {
+        sendResponse(createErrorResponse(id!, ErrorCodes.INTERNAL_ERROR, message));
+      }
     }
   }
 }

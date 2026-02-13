@@ -185,10 +185,10 @@ class TestSpeedGraphComponent:
         """Test rendering empty state."""
         component = SpeedGraphComponent(width=40, height=10)
         
-        result = component._render_empty()
+        result = component._get_empty_text()
         
-        assert "No speed data available" in result
-        assert "Speed History" in result
+        assert "No speed data available" in result.plain
+        assert "Speed History" in result.plain
     
     def test_render_stats(self) -> None:
         """Test rendering statistics."""
@@ -330,9 +330,9 @@ class TestSpeedGraphComponent:
         component.video_id = 123
         
         with patch("time.time", return_value=now.timestamp() + 1):
-            result = component.render_multi_stage()
+            result = component.get_multi_stage_text()
         
-        assert "Multi-Stage Speed History" in result
+        assert "Multi-Stage Speed History" in result.plain
     
     def test_render_multi_stage_no_data(self) -> None:
         """Test multi-stage rendering with no data."""
@@ -342,9 +342,9 @@ class TestSpeedGraphComponent:
         component = SpeedGraphComponent(speed_history_repo=mock_repo)
         component.video_id = 123
         
-        result = component.render_multi_stage()
+        result = component.get_multi_stage_text()
         
-        assert "No speed data available" in result
+        assert "No speed data available" in result.plain
 
 
 class TestSpeedGraphWidget:
@@ -412,11 +412,11 @@ class TestIntegration:
         assert component._stats.current > 0
         
         # Verify rendering
-        output = component._render()
-        assert "Speed History" in output
-        assert "Current:" in output
-        assert "Average:" in output
-        assert "Peak:" in output
+        output = component._get_text()
+        assert "Speed History" in output.plain
+        assert "Current:" in output.plain
+        assert "Average:" in output.plain
+        assert "Peak:" in output.plain
     
     def test_rolling_history(self) -> None:
         """Test that only recent history within window is shown."""

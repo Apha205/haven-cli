@@ -632,6 +632,120 @@ class StateManager:
         """
         return [v for v in self._state.values() if v.current_stage == stage]
     
+    async def refresh_from_database(self) -> int:
+        """Refresh state by fetching active videos from the database.
+        
+        This method polls the database for current active videos and updates
+        the in-memory state. It adds new videos, updates existing ones, and
+        removes completed/failed videos that are no longer active.
+        
+        Returns:
+            Number of videos refreshed/updated.
+        """
+        if not self._initialized:
+            return 0
+        
+        try:
+            # Fetch active videos from the database
+            active_videos = self._pipeline.get_active_videos()
+            refreshed_count = 0
+            current_ids = set()
+            
+            async with self._lock:
+                for video in active_videos:
+                    video_id = video.id
+                    current_ids.add(video_id)
+                    
+                    # Load or update each video
+                    try:
+                        # Check if this is a new video or needs refresh
+                        if video_id not in self._state:
+                            # New video - load it
+                            await self._load_video(video_id)
+                            refreshed_count += 1
+                        else:
+                            # Existing video - check if it needs update
+                            state = self._state[video_id]
+                            # Update if video has newer timestamp
+                            video_updated = getattr(video, 'updated_at', None)
+                            if video_updated and video_updated > state.updated_at:
+                                await self._load_video(video_id)
+                                refreshed_count += 1
+                    except Exception as e:
+                        logger.error(f"Error refreshing video {video_id}: {e}")
+                
+                # Clean up videos that are no longer active (completed/failed)
+                existing_ids = set(self._state.keys())
+                removed_ids = existing_ids - current_ids
+                
+                for video_id in list(removed_ids):
+                    video = self._state.get(video_id)
+                    if video and video.overall_status in ("completed", "failed"):
+                        del self._state[video_id]
+                        logger.debug(f"Removed completed/failed video {video_id} from state")
+            
+            return refreshed_count
+            
+        except Exception as e:
+            logger.error(f"Error refreshing from database: {e}")
+            return 0
+    
+    def get_speed_history(
+        self,
+        video_id: int,
+        stage: str = "download",
+        seconds: int = 60
+    ) -> List[tuple[float, float, float]]:
+        """Get speed history for a video from in-memory state.
+        
+        This provides speed data for graphing without requiring database queries.
+        
+        Args:
+            video_id: The video ID to look up
+            stage: The pipeline stage ("download", "encrypt", "upload")
+            seconds: Time window in seconds
+            
+        Returns:
+            List of (timestamp, speed, progress) tuples where timestamp is Unix time
+        """
+        state = self._state.get(video_id)
+        if not state:
+            return []
+        
+        # Get the appropriate speed history based on stage
+        if stage == "download":
+            history = state.speed_history
+        elif stage == "upload":
+            # Upload speed history would be stored separately if needed
+            # For now, return empty list
+            return []
+        elif stage == "encrypt":
+            # Encryption typically doesn't have speed tracking
+            return []
+        else:
+            return []
+        
+        # Filter by time window and convert to expected format
+        cutoff = time.time() - seconds
+        result = []
+        for sample in history:
+            ts = sample.get('timestamp')
+            if ts:
+                # Convert datetime to Unix timestamp
+                if isinstance(ts, datetime):
+                    ts_float = ts.timestamp()
+                else:
+                    ts_float = float(ts)
+                
+                if ts_float >= cutoff:
+                    result.append((
+                        ts_float,
+                        float(sample.get('speed', 0)),
+                        float(sample.get('progress', 0))
+                    ))
+        
+        return result
+    
     # Event handlers
     
     async def _on_download_progress(self, event: Event) -> None:

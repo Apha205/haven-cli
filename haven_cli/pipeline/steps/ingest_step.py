@@ -8,12 +8,15 @@ This step is the entry point for videos into the pipeline. It:
 5. Checks for duplicates based on pHash
 """
 
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from haven_cli.database.connection import get_db_session
 from haven_cli.database.models import Download, TorrentDownload
+
+logger = logging.getLogger(__name__)
 from haven_cli.database.repositories import VideoRepository
 from haven_cli.media import detect_mime_type, extract_video_metadata
 from haven_cli.media.exceptions import VideoMetadataError
@@ -155,8 +158,15 @@ class IngestStep(PipelineStep):
                 "codec": video_metadata.codec,
             })
             
+            # Get plugin information from context for source attribution
+            plugin_name = context.options.get("plugin_name")
+            plugin_source_id = context.options.get("source_id")
+            source_uri = context.options.get("source_uri")
+            
             # Save to database and get video ID
-            video_id = await self._save_to_database(video_metadata, context)
+            video_id = await self._save_to_database(
+                video_metadata, context, plugin_name, plugin_source_id, source_uri
+            )
             
             # Store video ID in context for later steps
             if video_id > 0:
@@ -228,12 +238,22 @@ class IngestStep(PipelineStep):
             # Log error but return False to allow processing
             return False
     
-    async def _save_to_database(self, metadata: VideoMetadata, context: PipelineContext) -> int:
+    async def _save_to_database(
+        self,
+        metadata: VideoMetadata,
+        context: PipelineContext,
+        plugin_name: Optional[str] = None,
+        plugin_source_id: Optional[str] = None,
+        source_uri: Optional[str] = None,
+    ) -> int:
         """Save video metadata to database.
         
         Args:
             metadata: Video metadata to save
             context: Pipeline context with source information
+            plugin_name: Name of the plugin that downloaded this video (e.g., "bittorrent")
+            plugin_source_id: Plugin-specific source ID (e.g., torrent infohash)
+            source_uri: Original source URI (e.g., magnet link, YouTube URL)
             
         Returns:
             Database ID of the created/updated video record
@@ -256,10 +276,13 @@ class IngestStep(PipelineStep):
                         file_size=metadata.file_size,
                         mime_type=metadata.mime_type,
                         phash=metadata.phash,
+                        plugin_name=plugin_name or existing.plugin_name,
+                        plugin_source_id=plugin_source_id or existing.plugin_source_id,
+                        source_uri=source_uri or existing.source_uri,
                     )
                     return existing.id
                 else:
-                    # Create new record
+                    # Create new record with plugin source attribution
                     video = repo.create(
                         source_path=metadata.path,
                         title=metadata.title,
@@ -267,6 +290,9 @@ class IngestStep(PipelineStep):
                         file_size=metadata.file_size,
                         mime_type=metadata.mime_type,
                         phash=metadata.phash,
+                        plugin_name=plugin_name,
+                        plugin_source_id=plugin_source_id,
+                        source_uri=source_uri,
                     )
                     
                     # Create completed download record if this video came from a plugin
@@ -302,9 +328,6 @@ class IngestStep(PipelineStep):
         Returns:
             Created Download record or None if not applicable
         """
-        import logging
-        logger = logging.getLogger(__name__)
-        
         # Check if this video came from a plugin download
         plugin_name = context.options.get("plugin_name")
         source_uri = context.options.get("source_uri")

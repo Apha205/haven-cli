@@ -31,6 +31,7 @@ class JSONRPCErrorCode(IntEnum):
     SDK_ERROR = -32003
     ENCRYPTION_ERROR = -32004
     UPLOAD_ERROR = -32005
+    INSUFFICIENT_BALANCE = -32006  # Actor/wallet has insufficient funds for transaction
 
 
 class JSONRPCError(Exception):

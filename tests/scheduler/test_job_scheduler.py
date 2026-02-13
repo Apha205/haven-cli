@@ -31,6 +31,16 @@ def scheduler() -> JobScheduler:
     return JobScheduler()
 
 
+@pytest.fixture(autouse=True)
+def mock_db_session():
+    """Mock database session to prevent test jobs from persisting to real database."""
+    with patch("haven_cli.database.connection.get_db_session") as mock_get_session:
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
+        yield mock_get_session
+
+
 @pytest.fixture
 def sample_job() -> RecurringJob:
     """Create a sample recurring job."""
@@ -633,6 +643,18 @@ class TestEdgeCases:
 class TestGetSchedulerSingleton:
     """Tests for the get_scheduler() singleton function."""
 
+    @pytest.fixture(autouse=True)
+    def reset_scheduler_singleton(self):
+        """Reset the scheduler singleton before and after each test."""
+        import haven_cli.scheduler.job_scheduler as js_module
+        # Reset before test
+        js_module._scheduler_instance = None
+        js_module._global_scheduler = None
+        yield
+        # Reset after test
+        js_module._scheduler_instance = None
+        js_module._global_scheduler = None
+
     def test_get_scheduler_returns_instance(self) -> None:
         """Test that get_scheduler() returns a JobScheduler instance."""
         scheduler = get_scheduler()
@@ -646,15 +668,6 @@ class TestGetSchedulerSingleton:
 
     def test_get_scheduler_creates_new_scheduler(self) -> None:
         """Test that get_scheduler() creates a new scheduler if none exists."""
-        # Reset the global instance
-        import haven_cli.scheduler.job_scheduler as js_module
-        original = js_module._scheduler_instance
-        js_module._scheduler_instance = None
-        
-        try:
-            scheduler = get_scheduler()
-            assert scheduler is not None
-            assert isinstance(scheduler, JobScheduler)
-        finally:
-            # Restore original
-            js_module._scheduler_instance = original
+        scheduler = get_scheduler()
+        assert scheduler is not None
+        assert isinstance(scheduler, JobScheduler)

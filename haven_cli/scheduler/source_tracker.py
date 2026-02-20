@@ -7,7 +7,7 @@ been seen before.
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional, Set
 
@@ -185,7 +185,7 @@ class SourceTracker:
         try:
             data = {
                 "sources": list(self._cache.get(plugin_name, set())),
-                "updated_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
                 "plugin_name": plugin_name,
             }
             cache_file.write_text(json.dumps(data, indent=2))

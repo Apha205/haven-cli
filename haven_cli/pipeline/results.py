@@ -5,7 +5,7 @@ including success/failure states, error information, and retry handling.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum, auto
 from typing import Any, Dict, List, Optional
 
@@ -181,7 +181,7 @@ class StepResult:
         return cls(
             status=StepStatus.RUNNING,
             step_name=step_name,
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
     
     @classmethod
@@ -191,7 +191,7 @@ class StepResult:
             status=StepStatus.SUCCESS,
             step_name=step_name,
             data=data,
-            completed_at=datetime.utcnow(),
+            completed_at=datetime.now(timezone.utc),
         )
     
     @classmethod
@@ -201,7 +201,7 @@ class StepResult:
             status=StepStatus.FAILED,
             step_name=step_name,
             error=error,
-            completed_at=datetime.utcnow(),
+            completed_at=datetime.now(timezone.utc),
         )
     
     @classmethod
@@ -211,12 +211,12 @@ class StepResult:
             status=StepStatus.SKIPPED,
             step_name=step_name,
             metadata={"skip_reason": reason} if reason else {},
-            completed_at=datetime.utcnow(),
+            completed_at=datetime.now(timezone.utc),
         )
     
     def with_timing(self, started_at: datetime) -> "StepResult":
         """Add timing information to this result."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         duration = int((now - started_at).total_seconds() * 1000)
         
         self.started_at = started_at
@@ -285,7 +285,7 @@ class PipelineResult:
         
         Automatically determines success based on step statuses.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         # Pipeline succeeds if no steps failed
         all_success = all(

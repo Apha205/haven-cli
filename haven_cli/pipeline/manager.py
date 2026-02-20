@@ -9,7 +9,7 @@ The PipelineManager is responsible for:
 """
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Type
 
 from haven_cli.pipeline.context import BatchContext, PipelineContext
@@ -122,7 +122,7 @@ class PipelineManager:
         Returns:
             PipelineResult with aggregated step results
         """
-        started_at = datetime.utcnow()
+        started_at = datetime.now(timezone.utc)
         step_results: List[StepResult] = []
         
         # Track active pipeline

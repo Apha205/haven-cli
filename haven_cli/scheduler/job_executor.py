@@ -7,7 +7,7 @@ including plugin discovery, archiving, and pipeline processing.
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 from uuid import UUID
@@ -116,7 +116,7 @@ class JobExecutor:
         Returns:
             Execution result with statistics
         """
-        started_at = datetime.utcnow()
+        started_at = datetime.now(timezone.utc)
         sources_found = 0
         sources_archived = 0
         
@@ -127,7 +127,7 @@ class JobExecutor:
                 return JobExecutionResult(
                     job_id=job.job_id,
                     started_at=started_at,
-                    completed_at=datetime.utcnow(),
+                    completed_at=datetime.now(timezone.utc),
                     success=False,
                     error=f"Plugin not found: {job.plugin_name}",
                 )
@@ -143,7 +143,7 @@ class JobExecutor:
                 return JobExecutionResult(
                     job_id=job.job_id,
                     started_at=started_at,
-                    completed_at=datetime.utcnow(),
+                    completed_at=datetime.now(timezone.utc),
                     success=True,
                     sources_found=0,
                     sources_archived=0,
@@ -176,7 +176,7 @@ class JobExecutor:
             execution_result = JobExecutionResult(
                 job_id=job.job_id,
                 started_at=started_at,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
                 success=True,
                 sources_found=sources_found,
                 sources_archived=sources_archived,
@@ -192,7 +192,7 @@ class JobExecutor:
             return JobExecutionResult(
                 job_id=job.job_id,
                 started_at=started_at,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
                 success=False,
                 sources_found=sources_found,
                 sources_archived=sources_archived,
@@ -568,8 +568,8 @@ class BatchJobExecutor:
             if isinstance(result, Exception):
                 processed_results.append(JobExecutionResult(
                     job_id=jobs[i].job_id,
-                    started_at=datetime.utcnow(),
-                    completed_at=datetime.utcnow(),
+                    started_at=datetime.now(timezone.utc),
+                    completed_at=datetime.now(timezone.utc),
                     success=False,
                     error=str(result),
                 ))

@@ -6,7 +6,7 @@ and follows a consistent lifecycle with hooks for customization.
 """
 
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Type
 
 from haven_cli.pipeline.context import PipelineContext
@@ -111,7 +111,7 @@ class PipelineStep(ABC):
             result = await self._handle_skip(context)
             return result
         
-        started_at = datetime.utcnow()
+        started_at = datetime.now(timezone.utc)
         attempts = 0
         last_error: Optional[StepError] = None
         

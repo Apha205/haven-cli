@@ -5,7 +5,7 @@ the pipeline, accumulating results and state from each step.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
@@ -139,8 +139,8 @@ class PipelineContext:
     upload_result: Optional[UploadResult] = None
     arkiv_entity_key: Optional[str] = None
     errors: List[Dict[str, Any]] = field(default_factory=list)
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     step_data: Dict[str, Any] = field(default_factory=dict)
     
     def __post_init__(self) -> None:
@@ -196,7 +196,7 @@ class PipelineContext:
     
     def touch(self) -> None:
         """Update the updated_at timestamp."""
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(timezone.utc)
     
     def set_step_data(self, step_name: str, key: str, value: Any) -> None:
         """Store data from a step for later use.
@@ -243,7 +243,7 @@ class PipelineContext:
             "step": step_name,
             "code": code,
             "message": message,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             **details,
         })
         self.touch()
@@ -304,7 +304,7 @@ class BatchContext:
     
     batch_id: UUID = field(default_factory=uuid4)
     contexts: List[PipelineContext] = field(default_factory=list)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     
     def add(self, context: PipelineContext) -> None:
         """Add a pipeline context to the batch."""

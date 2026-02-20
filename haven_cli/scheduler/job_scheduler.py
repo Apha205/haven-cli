@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -426,8 +426,8 @@ class JobScheduler:
         if not job:
             return JobExecutionResult(
                 job_id=job_id,
-                started_at=datetime.utcnow(),
-                completed_at=datetime.utcnow(),
+                started_at=datetime.now(timezone.utc),
+                completed_at=datetime.now(timezone.utc),
                 success=False,
                 error="Job not found",
             )
@@ -714,14 +714,14 @@ class JobScheduler:
         from croniter import croniter
 
         try:
-            cron = croniter(schedule, datetime.utcnow())
+            cron = croniter(schedule, datetime.now(timezone.utc))
             return cron.get_next(datetime)
         except Exception as e:
             logger.error(f"Failed to calculate next run for schedule '{schedule}': {e}")
             # Fallback to 1 hour from now
             from datetime import timedelta
 
-            return datetime.utcnow() + timedelta(hours=1)
+            return datetime.now(timezone.utc) + timedelta(hours=1)
 
     async def _job_callback(self, job_id: UUID) -> None:
         """Callback invoked by APScheduler when job should run."""
@@ -795,7 +795,7 @@ class JobScheduler:
         """
         from haven_cli.scheduler.job_executor import JobExecutor
 
-        started_at = datetime.utcnow()
+        started_at = datetime.now(timezone.utc)
 
         try:
             # Create executor
@@ -822,7 +822,7 @@ class JobScheduler:
             return JobExecutionResult(
                 job_id=job.job_id,
                 started_at=started_at,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
                 success=False,
                 error=str(e),
             )
@@ -951,7 +951,7 @@ class JobScheduler:
         try:
             state = {
                 "version": "1.0.0",
-                "saved_at": datetime.utcnow().isoformat(),
+                "saved_at": datetime.now(timezone.utc).isoformat(),
                 "jobs": [
                     {
                         "job_id": str(j.job_id),
@@ -1023,7 +1023,7 @@ class JobScheduler:
         """
         from datetime import timedelta
         
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         
         try:
             from haven_cli.database.connection import get_db_session

@@ -872,8 +872,15 @@ class PipelineInterface:
             downloads.append(unified)
         
         # Sort by created_at desc (most recent first)
-        # Use offset-aware minimum datetime to avoid comparison errors
-        downloads.sort(key=lambda x: x.created_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        # Normalize all datetimes to offset-aware to avoid comparison errors
+        def _get_sort_datetime(x):
+            dt = x.created_at
+            if dt is None:
+                return datetime.min.replace(tzinfo=timezone.utc)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        downloads.sort(key=_get_sort_datetime, reverse=True)
         
         return downloads
     
@@ -1392,8 +1399,15 @@ class PipelineInterface:
             downloads.append(unified)
         
         # Sort by created_at desc and apply limit
-        # Use offset-aware minimum datetime to avoid comparison errors
-        downloads.sort(key=lambda x: x.created_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        # Normalize all datetimes to offset-aware to avoid comparison errors
+        def _get_sort_datetime(x):
+            dt = x.created_at
+            if dt is None:
+                return datetime.min.replace(tzinfo=timezone.utc)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        downloads.sort(key=_get_sort_datetime, reverse=True)
         return downloads[:limit]
     
     def get_download_stats(self) -> DownloadStats:

@@ -360,10 +360,19 @@ class VideoListWidget(DataTable):
                 videos = [v for v in videos if not v.has_failed]
         
         # Sort by activity and creation time
-        # Use offset-aware minimum datetime to avoid comparison errors
+        # Normalize all datetimes to offset-aware to avoid comparison errors
+        def _get_sort_datetime(v):
+            dt = v.created_at
+            if dt is None:
+                return datetime.min.replace(tzinfo=timezone.utc)
+            # Ensure offset-aware: if naive, assume UTC
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        
         videos.sort(key=lambda v: (
             not v.is_active,  # Active videos first
-            v.created_at or datetime.min.replace(tzinfo=timezone.utc),
+            _get_sort_datetime(v),
         ))
         
         # Build row data

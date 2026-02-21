@@ -80,10 +80,10 @@ install_package() {
     # Check if installing from local source or PyPI
     if [ -f "pyproject.toml" ] && grep -q "haven-cli" pyproject.toml 2>/dev/null; then
         print_info "Installing from local source..."
-        $PIP_CMD install -e ".[tui]"
+        $PIP_CMD install -e ".[tui]" --ignore-installed typing_extensions --break-system-packages
     else
         print_info "Installing from PyPI..."
-        $PIP_CMD install "$PACKAGE_NAME[tui]"
+        $PIP_CMD install "$PACKAGE_NAME[tui]" --ignore-installed typing_extensions --break-system-packages
     fi
     
     if [ $? -eq 0 ]; then

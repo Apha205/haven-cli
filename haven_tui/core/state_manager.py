@@ -167,7 +167,17 @@ class VideoState:
     
     @property
     def is_completed(self) -> bool:
-        """Check if video has completed all stages."""
+        """Check if video has completed all stages.
+        
+        Returns True if either:
+        - All individual stage statuses are "completed", OR
+        - The overall_status is "completed" (for backward compatibility)
+        """
+        # First check overall status as a quick shortcut
+        if self.overall_status == "completed":
+            return True
+        
+        # Also check all individual stages
         return (
             self.download_status == "completed"
             and self.encrypt_status == "completed"
@@ -529,6 +539,7 @@ class StateManager:
             (EventType.SYNC_COMPLETE, self._on_sync_complete),
             (EventType.ANALYSIS_COMPLETE, self._on_analysis_complete),
             (EventType.STEP_COMPLETE, self._on_stage_complete),
+            (EventType.PIPELINE_COMPLETE, self._on_pipeline_complete),
             (EventType.PIPELINE_FAILED, self._on_pipeline_failed),
             (EventType.STEP_FAILED, self._on_step_failed),
             (EventType.PIPELINE_STARTED, self._on_pipeline_started),
@@ -632,12 +643,15 @@ class StateManager:
         """
         return [v for v in self._state.values() if v.current_stage == stage]
     
-    async def refresh_from_database(self) -> int:
+    async def refresh_from_database(self, include_completed: bool = True) -> int:
         """Refresh state by fetching active videos from the database.
         
         This method polls the database for current active videos and updates
-        the in-memory state. It adds new videos, updates existing ones, and
-        removes completed/failed videos that are no longer active.
+        the in-memory state. It adds new videos, updates existing ones.
+        Completed videos are kept in state so they can be displayed.
+        
+        Args:
+            include_completed: If True, also fetch completed videos from database
         
         Returns:
             Number of videos refreshed/updated.
@@ -647,7 +661,7 @@ class StateManager:
         
         try:
             # Fetch active videos from the database
-            active_videos = self._pipeline.get_active_videos()
+            active_videos = self._pipeline.get_active_videos(include_completed=include_completed)
             refreshed_count = 0
             current_ids = set()
             
@@ -674,15 +688,20 @@ class StateManager:
                     except Exception as e:
                         logger.error(f"Error refreshing video {video_id}: {e}")
                 
-                # Clean up videos that are no longer active (completed/failed)
+                # Mark videos that are no longer in active list but are in state
+                # We keep them in state but mark them as needing re-check
+                # Only remove videos that are truly gone (deleted from database)
                 existing_ids = set(self._state.keys())
                 removed_ids = existing_ids - current_ids
                 
                 for video_id in list(removed_ids):
                     video = self._state.get(video_id)
-                    if video and video.overall_status in ("completed", "failed"):
+                    # Only remove if the video is not completed/failed
+                    # (completed/failed videos should stay in state for display)
+                    if video and video.overall_status not in ("completed", "failed"):
+                        # Video is no longer active and wasn't completed - might be deleted
                         del self._state[video_id]
-                        logger.debug(f"Removed completed/failed video {video_id} from state")
+                        logger.debug(f"Removed stale video {video_id} from state")
             
             return refreshed_count
             
@@ -1009,6 +1028,48 @@ class StateManager:
         
         self._notify_change(video_id, 'analysis_status', 'completed')
         self._notify_change(video_id, 'analysis_progress', 100.0)
+    
+    async def _on_pipeline_complete(self, event: Event) -> None:
+        """Handle pipeline complete events.
+        
+        Marks all stages as completed and sets overall status to completed.
+        This ensures the video shows as fully completed in the TUI.
+        
+        Args:
+            event: The pipeline complete event
+        """
+        payload = event.payload
+        video_id = payload.get('video_id')
+        
+        if not video_id or video_id not in self._state:
+            return
+        
+        async with self._lock:
+            state = self._state[video_id]
+            # Mark all stages as completed
+            state.download_status = "completed"
+            state.download_progress = 100.0
+            state.encrypt_status = "completed"
+            state.encrypt_progress = 100.0
+            state.upload_status = "completed"
+            state.upload_progress = 100.0
+            state.sync_status = "completed"
+            state.sync_progress = 100.0
+            state.analysis_status = "completed"
+            state.analysis_progress = 100.0
+            # Update overall status
+            state.overall_status = "completed"
+            state.current_stage = "complete"
+            state.update_timestamp()
+        
+        # Notify all changes
+        self._notify_change(video_id, 'overall_status', 'completed')
+        self._notify_change(video_id, 'current_stage', 'complete')
+        self._notify_change(video_id, 'download_status', 'completed')
+        self._notify_change(video_id, 'encrypt_status', 'completed')
+        self._notify_change(video_id, 'upload_status', 'completed')
+        self._notify_change(video_id, 'sync_status', 'completed')
+        self._notify_change(video_id, 'analysis_status', 'completed')
     
     async def _on_stage_complete(self, event: Event) -> None:
         """Handle stage/step complete events.

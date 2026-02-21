@@ -604,11 +604,14 @@ class PipelineInterface:
         session = self._ensure_session()
         return VideoRepository(session)
     
-    def get_active_videos(self) -> List[Video]:
+    def get_active_videos(self, include_completed: bool = False) -> List[Video]:
         """Get videos currently in the pipeline.
         
         Returns videos that are pending, active, or failed.
         Also includes torrent downloads that don't have Video records yet.
+        
+        Args:
+            include_completed: If True, also include videos with overall_status="completed"
         
         Returns:
             List of active videos (or Video-like objects for torrent-only entries)
@@ -622,9 +625,14 @@ class PipelineInterface:
             PipelineSnapshot, Download, EncryptionJob, UploadJob, SyncJob
         )
         
+        # Build status filter
+        statuses = ["active", "pending", "failed"]
+        if include_completed:
+            statuses.append("completed")
+        
         # Query videos with active pipeline snapshots
         active_ids = session.query(PipelineSnapshot.video_id).filter(
-            PipelineSnapshot.overall_status.in_(["active", "pending", "failed"])
+            PipelineSnapshot.overall_status.in_(statuses)
         ).all()
         
         videos = []
@@ -645,6 +653,38 @@ class PipelineInterface:
             placeholder = self._create_torrent_placeholder(view)
             if placeholder:
                 videos.append(placeholder)
+        
+        return videos
+    
+    def get_completed_videos(self, limit: int = 100) -> List[Video]:
+        """Get videos that have completed all pipeline stages.
+        
+        Args:
+            limit: Maximum number of completed videos to return
+            
+        Returns:
+            List of completed videos ordered by completion time (newest first)
+        """
+        session = self._ensure_session()
+        
+        from haven_cli.database.models import PipelineSnapshot
+        
+        # Query videos with completed status
+        completed_query = session.query(
+            PipelineSnapshot.video_id
+        ).filter(
+            PipelineSnapshot.overall_status == "completed"
+        ).order_by(
+            desc(PipelineSnapshot.pipeline_completed_at)
+        ).limit(limit)
+        
+        completed_ids = completed_query.all()
+        
+        if not completed_ids:
+            return []
+        
+        video_ids = [r[0] for r in completed_ids]
+        videos = session.query(Video).filter(Video.id.in_(video_ids)).all()
         
         return videos
     

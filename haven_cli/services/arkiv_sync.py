@@ -325,8 +325,8 @@ def _build_attributes(context: PipelineContext) -> dict[str, str | int]:
         attributes["is_encrypted"] = 1
     
     # Encrypted CID - stored in attributes (already encrypted, so safe for public)
-    if context.cid_encryption_metadata:
-        attributes["encrypted_cid"] = context.cid_encryption_metadata.encrypted_cid
+    if context.encrypted_cid:
+        attributes["encrypted_cid"] = context.encrypted_cid
     
     # Analysis model - track which VLM was used
     if context.analysis_result and context.analysis_result.analysis_model:
@@ -366,7 +366,7 @@ def _build_payload(context: PipelineContext) -> dict[str, Any]:
     # For encrypted videos: encrypted_cid is in attributes (public), actual CID is decrypted during restore
     # Store CID encryption metadata in payload so we can decrypt encrypted_cid during restore
     if context.encryption_metadata:
-        if context.cid_encryption_metadata:
+        if context.cid_encryption_metadata and context.encrypted_cid:
             cid_metadata: dict[str, Any] = {
                 "version": "hybrid-v1",
                 "encryptedKey": context.cid_encryption_metadata.encrypted_key,
@@ -376,7 +376,7 @@ def _build_payload(context: PipelineContext) -> dict[str, Any]:
                 "keyLength": 256,
                 "accessControlConditions": context.cid_encryption_metadata.access_control_conditions,
                 "chain": context.cid_encryption_metadata.chain,
-                "encryptedCid": context.cid_encryption_metadata.encrypted_cid,
+                "encryptedCid": context.encrypted_cid,
             }
             payload["cid_encryption_metadata"] = json.dumps(cid_metadata)
         

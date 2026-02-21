@@ -237,6 +237,14 @@ const methods: MethodRegistry = {
     return await litWrapper.decryptFile(decryptParams);
   },
 
+  'lit.encryptCid': async (params: unknown) => {
+    if (!litWrapper?.isConnected) {
+      throw new Error('Lit Protocol not connected');
+    }
+    const encryptParams = params as Record<string, unknown>;
+    return await litWrapper.encryptCid(encryptParams);
+  },
+
   // Synapse SDK methods
   'synapse.connect': async (params: unknown) => {
     synapseWrapper = createSynapseWrapper();

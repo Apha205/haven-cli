@@ -121,6 +121,7 @@ def create_test_context(
             chain="ethereum"
         )
         # Add CID encryption metadata for encrypted videos
+        context.encrypted_cid = "encryptedcidstring123"
         context.cid_encryption_metadata = CidEncryptionMetadata(
             encrypted_key="cidencryptedkey123",
             key_hash="cidkeyhash456",
@@ -129,8 +130,7 @@ def create_test_context(
                 "contractAddress": "0xabcdef1234567890",
                 "chain": "ethereum",
             }],
-            chain="ethereum",
-            encrypted_cid="encryptedcidstring123"
+            chain="ethereum"
         )
         # Add original hash for lit metadata
         context.set_step_data("encrypt", "original_hash", "sha256originalhash789")

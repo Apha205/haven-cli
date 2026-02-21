@@ -28,6 +28,7 @@ from haven_cli.js_runtime.bridge import JSRuntimeBridge
 from haven_cli.js_runtime.manager import JSBridgeManager
 from haven_cli.js_runtime.protocol import JSONRPCError, JSONRPCErrorCode
 from haven_cli.pipeline.context import (
+    CidEncryptionMetadata,
     EncryptionMetadata,
     PipelineContext,
     UploadResult,
@@ -460,6 +461,29 @@ class UploadStep(ConditionalStep):
                         # Log but don't fail - video upload succeeded
                         logger.warning(f"Failed to upload VLM AI.json file: {e}")
             
+            # Encrypt CID for Arkiv sync (if encryption is enabled)
+            cid_encryption_metadata = None
+            cid_encryption_result = None
+            if context.encryption_metadata and upload_result.get("root_cid"):
+                try:
+                    cid_encryption_result = await self._encrypt_cid(
+                        upload_result.get("root_cid"),
+                        context.encryption_metadata.access_control_conditions,
+                        context,
+                    )
+                    # Create CidEncryptionMetadata from result (excluding encrypted_cid)
+                    cid_encryption_metadata = CidEncryptionMetadata(
+                        encrypted_key=cid_encryption_result.get("encryptedKey", ""),
+                        key_hash=cid_encryption_result.get("keyHash", ""),
+                        iv=cid_encryption_result.get("iv", ""),
+                        access_control_conditions=cid_encryption_result.get("accessControlConditions", []),
+                        chain=cid_encryption_result.get("chain", "ethereum"),
+                    )
+                    logger.info(f"CID encrypted for Arkiv sync")
+                except Exception as e:
+                    # Log but don't fail - upload succeeded
+                    logger.warning(f"Failed to encrypt CID for Arkiv sync: {e}")
+            
             # Create upload result
             result = UploadResult(
                 video_path=video_path,
@@ -472,6 +496,12 @@ class UploadStep(ConditionalStep):
             
             # Store in context
             context.upload_result = result
+            
+            # Store CID encryption metadata for Arkiv sync
+            if cid_encryption_metadata:
+                context.cid_encryption_metadata = cid_encryption_metadata
+            if cid_encryption_result:
+                context.encrypted_cid = cid_encryption_result.get("encryptedCid")
             
             # Update database
             await self._update_database(video_path, result)
@@ -754,6 +784,58 @@ class UploadStep(ConditionalStep):
             "deal_id": result.get("dealId", ""),
             "transaction_hash": result.get("txHash", ""),
         }
+    
+    async def _encrypt_cid(
+        self,
+        cid: str,
+        access_control_conditions: List[Dict[str, Any]],
+        context: PipelineContext,
+    ) -> Dict[str, Any]:
+        """Encrypt the CID using Lit Protocol for Arkiv sync.
+        
+        This encrypts the CID with the same access control conditions as the
+        video content, allowing the CID to be stored publicly in Arkiv
+        attributes while remaining decryptable only by authorized parties.
+        
+        Uses _js_call_with_retry for resilience during concurrent operations.
+        
+        Args:
+            cid: The CID to encrypt
+            access_control_conditions: Access control conditions for encryption
+            context: Pipeline context for progress updates
+            
+        Returns:
+            Dictionary with encryptedCid and encryption metadata details
+            
+        Raises:
+            RuntimeError: If CID encryption fails
+        """
+        logger.info(f"Encrypting CID for Arkiv sync: {cid[:30]}...")
+        
+        # Get network configuration
+        network_mode = self._config.get("network_mode", "testnet")
+        network_config = get_network_config(network_mode)
+        
+        # Get chain from config
+        chain = self._config.get("chain") or network_config.chain_for_access_control
+        
+        try:
+            result = await self._js_call_with_retry(
+                "lit.encryptCid",
+                {
+                    "cid": cid,
+                    "accessControlConditions": access_control_conditions,
+                    "chain": chain,
+                },
+                timeout=60.0,  # Shorter timeout for CID encryption (small data)
+            )
+            
+            logger.info(f"CID encrypted successfully")
+            return result
+            
+        except Exception as e:
+            logger.error(f"CID encryption failed: {e}")
+            raise RuntimeError(f"CID encryption failed: {e}") from e
     
     def _categorize_error(self, error: Exception) -> ErrorCategory:
         """Categorize error for retry decisions.

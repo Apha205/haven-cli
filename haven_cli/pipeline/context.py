@@ -107,7 +107,6 @@ class CidEncryptionMetadata:
         iv: Initialization vector (base64)
         access_control_conditions: Lit Protocol access control conditions
         chain: Blockchain for access control (default: ethereum)
-        encrypted_cid: The encrypted CID string
     """
     
     encrypted_key: str = ""
@@ -115,7 +114,6 @@ class CidEncryptionMetadata:
     iv: str = ""
     access_control_conditions: List[Dict[str, Any]] = field(default_factory=list)
     chain: str = "ethereum"
-    encrypted_cid: str = ""
 
 
 @dataclass
@@ -177,6 +175,7 @@ class PipelineContext:
         analysis_result: VLM analysis result (if performed)
         encryption_metadata: Encryption details (if encrypted)
         upload_result: Filecoin upload result (if uploaded)
+        encrypted_cid: Encrypted CID string for Arkiv (if encrypted)
         cid_encryption_metadata: CID-level encryption metadata (if encrypted)
         segment_metadata: Multi-segment recording metadata (if applicable)
         arkiv_entity_key: Arkiv blockchain entity key (if synced)
@@ -195,6 +194,7 @@ class PipelineContext:
     encryption_metadata: Optional[EncryptionMetadata] = None
     encrypted_video_path: Optional[str] = None
     upload_result: Optional[UploadResult] = None
+    encrypted_cid: Optional[str] = None
     cid_encryption_metadata: Optional[CidEncryptionMetadata] = None
     segment_metadata: Optional[SegmentMetadata] = None
     arkiv_entity_key: Optional[str] = None

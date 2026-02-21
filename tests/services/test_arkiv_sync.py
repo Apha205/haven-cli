@@ -321,13 +321,13 @@ class TestBuildPayloadGoldStandard:
                 access_control_conditions=[{"contractAddress": "0x456", "chain": "ethereum"}],
                 chain="ethereum"
             ),
+            encrypted_cid="encryptedcid123",
             cid_encryption_metadata=CidEncryptionMetadata(
                 encrypted_key="cidencryptedkey",
                 key_hash="cidkeyhash",
                 iv="cidiv",
                 access_control_conditions=[{"contractAddress": "0x789", "chain": "ethereum"}],
-                chain="ethereum",
-                encrypted_cid="encryptedcid123"
+                chain="ethereum"
             )
         )
         payload = _build_payload(context)
@@ -568,13 +568,13 @@ class TestBuildPayload:
                 access_control_conditions=[{"contractAddress": "", "chain": "ethereum"}],
                 chain="ethereum"
             ),
+            encrypted_cid="encryptedcid123",
             cid_encryption_metadata=CidEncryptionMetadata(
                 encrypted_key="base64encryptedkey",
                 key_hash="keyhash789",
                 iv="base64iv",
                 access_control_conditions=[{"contractAddress": "", "chain": "ethereum"}],
-                chain="ethereum",
-                encrypted_cid="encryptedcid123"
+                chain="ethereum"
             )
         )
         
@@ -816,13 +816,13 @@ class TestBuildAttributesGoldStandard:
             uploaded=True,
             encrypted=True
         )
-        # Add CID encryption metadata with encrypted_cid
+        # Add CID encryption metadata and encrypted_cid
+        context.encrypted_cid = "encryptedcid123"
         context.cid_encryption_metadata = CidEncryptionMetadata(
             encrypted_key="base64key",
             key_hash="keyhash",
             iv="base64iv",
-            chain="ethereum",
-            encrypted_cid="encryptedcid123"
+            chain="ethereum"
         )
         attributes = _build_attributes(context)
         
@@ -930,13 +930,13 @@ class TestBuildAttributes:
         """Test attributes with CID-level encryption includes encrypted_cid."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
+            encrypted_cid="encryptedcid123",
             cid_encryption_metadata=CidEncryptionMetadata(
                 encrypted_key="base64encryptedkey",
                 key_hash="keyhash789",
                 iv="base64iv",
                 access_control_conditions=[{"contractAddress": "", "chain": "ethereum"}],
-                chain="ethereum",
-                encrypted_cid="encryptedcid123"
+                chain="ethereum"
             )
         )
         

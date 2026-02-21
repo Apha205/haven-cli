@@ -167,6 +167,48 @@ export interface LitDecryptFileResult {
   integrityCheck: boolean;
 }
 
+// ============================================================================
+// Lit Protocol CID Encryption Types
+// ============================================================================
+
+/**
+ * Parameters for encrypting a CID using Lit Protocol
+ */
+export interface LitEncryptCidParams {
+  /** The CID string to encrypt */
+  cid: string;
+  /** Access control conditions for decryption */
+  accessControlConditions: AccessControlCondition[];
+  /** Blockchain chain (default: 'ethereum') */
+  chain?: string;
+  /** Private key for creating access control (if not provided, uses HAVEN_PRIVATE_KEY env) */
+  privateKey?: string;
+}
+
+/**
+ * Result of CID encryption operation
+ */
+export interface LitEncryptCidResult {
+  /** The encrypted CID string (ciphertext from Lit Protocol) */
+  encryptedCid: string;
+  /** SHA-256 hash of the original CID */
+  dataToEncryptHash: string;
+  /** BLS-encrypted AES key (base64-encoded) */
+  encryptedKey: string;
+  /** SHA-256 hash of the AES key (for verification) */
+  keyHash: string;
+  /** Base64-encoded 12-byte IV for AES-GCM */
+  iv: string;
+  /** AES algorithm identifier */
+  algorithm: 'AES-GCM';
+  /** Key length in bits */
+  keyLength: 256;
+  /** Access control conditions used for encryption */
+  accessControlConditions: AccessControlCondition[];
+  /** Blockchain chain identifier */
+  chain: string;
+}
+
 /**
  * Hybrid encryption metadata stored alongside the encrypted file
  */

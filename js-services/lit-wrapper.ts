@@ -18,6 +18,7 @@ import type {
   LitEncryptFileResult,
   LitDecryptFileResult,
   HybridEncryptionMetadata,
+  LitEncryptCidResult,
 } from './types.ts';
 
 // Hybrid crypto imports - use global state management
@@ -65,6 +66,7 @@ export interface LitWrapper {
   getSession(): Promise<LitSessionResult>;
   encryptFile(params: Record<string, unknown>, onProgress?: ProgressCallback): Promise<LitEncryptFileResult>;
   decryptFile(params: Record<string, unknown>, onProgress?: ProgressCallback): Promise<LitDecryptFileResult>;
+  encryptCid(params: Record<string, unknown>): Promise<LitEncryptCidResult>;
 }
 
 /**
@@ -416,6 +418,71 @@ class LitWrapperImpl implements LitWrapper {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       throw new Error(`File decryption failed: ${errorMessage}`);
+    }
+  }
+
+  async encryptCid(params: Record<string, unknown>): Promise<LitEncryptCidResult> {
+    if (!this.isConnected) {
+      throw new Error('Lit Protocol not connected');
+    }
+
+    const cid = params.cid as string;
+    const accessControlConditions = params.accessControlConditions as AccessControlCondition[];
+    const chain = (params.chain as string) ?? 'ethereum';
+
+    if (!cid) {
+      throw new Error('Missing required parameter: cid');
+    }
+
+    if (!accessControlConditions || accessControlConditions.length === 0) {
+      throw new Error('Missing required parameter: accessControlConditions');
+    }
+
+    // Get private key
+    const privateKey = (params.privateKey as string) || this.getPrivateKeyFromEnv();
+    if (!privateKey) {
+      throw new Error(
+        'Private key required for CID encryption. Set HAVEN_PRIVATE_KEY environment variable or pass privateKey parameter.'
+      );
+    }
+
+    try {
+      // Use hybrid encryption to encrypt the CID
+      // Convert CID string to ArrayBuffer
+      const encoder = new TextEncoder();
+      const cidData = encoder.encode(cid);
+      const cidBuffer = new Uint8Array(cidData).buffer;
+
+      // Encrypt the CID using hybrid encryption
+      const { encryptedFile, metadata } = await hybridEncryptFile(
+        cidBuffer as ArrayBuffer,
+        privateKey,
+        chain,
+        (message) => {
+          // Log to stderr for debugging
+          console.error(`[lit-wrapper] CID encryption: ${message}`);
+        },
+        this._network,
+        accessControlConditions // Pass the access control conditions
+      );
+
+      // The encrypted CID is the base64-encoded encrypted data
+      const encryptedCid = btoa(String.fromCharCode(...encryptedFile));
+
+      return {
+        encryptedCid,
+        dataToEncryptHash: metadata.keyHash, // Use keyHash as the data hash
+        encryptedKey: metadata.encryptedKey,
+        keyHash: metadata.keyHash,
+        iv: metadata.iv,
+        algorithm: metadata.algorithm,
+        keyLength: metadata.keyLength,
+        accessControlConditions: metadata.accessControlConditions,
+        chain: metadata.chain,
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw new Error(`CID encryption failed: ${errorMessage}`);
     }
   }
 

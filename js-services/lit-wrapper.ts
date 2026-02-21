@@ -426,6 +426,11 @@ class LitWrapperImpl implements LitWrapper {
       throw new Error('Lit Protocol not connected');
     }
 
+    const currentClient = this.client;
+    if (!currentClient) {
+      throw new Error('Lit Protocol not connected');
+    }
+
     const cid = params.cid as string;
     const accessControlConditions = params.accessControlConditions as AccessControlCondition[];
     const chain = (params.chain as string) ?? 'ethereum';
@@ -438,47 +443,45 @@ class LitWrapperImpl implements LitWrapper {
       throw new Error('Missing required parameter: accessControlConditions');
     }
 
-    // Get private key
-    const privateKey = (params.privateKey as string) || this.getPrivateKeyFromEnv();
-    if (!privateKey) {
-      throw new Error(
-        'Private key required for CID encryption. Set HAVEN_PRIVATE_KEY environment variable or pass privateKey parameter.'
-      );
-    }
-
     try {
-      // Use hybrid encryption to encrypt the CID
-      // Convert CID string to ArrayBuffer
+      // Use DIRECT Lit encryption for CID text (matching haven-player's encryptTextWithLit)
+      // CIDs are small strings, so hybrid encryption is unnecessary and incompatible
+      // with haven-player/haven-dapp decryption which expects direct Lit ciphertext
       const encoder = new TextEncoder();
-      const cidData = encoder.encode(cid);
-      const cidBuffer = new Uint8Array(cidData).buffer;
+      const dataToEncrypt = encoder.encode(cid);
 
-      // Encrypt the CID using hybrid encryption
-      const { encryptedFile, metadata } = await hybridEncryptFile(
-        cidBuffer as ArrayBuffer,
-        privateKey,
-        chain,
-        (message) => {
-          // Log to stderr for debugging
-          console.error(`[lit-wrapper] CID encryption: ${message}`);
-        },
-        this._network,
-        accessControlConditions // Pass the access control conditions
+      // Convert access control conditions to unified format (v8)
+      const unifiedAccessControlConditions = this.toUnifiedAccessControlConditions(
+        accessControlConditions
       );
 
-      // The encrypted CID is the base64-encoded encrypted data
-      const encryptedCid = btoa(String.fromCharCode(...encryptedFile));
+      console.error(`[lit-wrapper] CID encryption: Encrypting CID with direct Lit Protocol...`);
 
+      // Encrypt using Lit SDK v8 directly (NOT hybrid encryption)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const encrypted = await (currentClient as any).encrypt({
+        dataToEncrypt,
+        unifiedAccessControlConditions,
+        chain,
+      });
+
+      console.error(`[lit-wrapper] CID encryption: Encryption complete`);
+
+      // Match haven-player's encryptTextWithLit output format:
+      // - ciphertext = encrypted.ciphertext (the Lit ciphertext)
+      // - metadata.encryptedKey = encrypted.ciphertext (SAME value)
+      // - metadata.keyHash = encrypted.dataToEncryptHash
+      // - iv = '' (not used for direct text encryption)
       return {
-        encryptedCid,
-        dataToEncryptHash: metadata.keyHash, // Use keyHash as the data hash
-        encryptedKey: metadata.encryptedKey,
-        keyHash: metadata.keyHash,
-        iv: metadata.iv,
-        algorithm: metadata.algorithm,
-        keyLength: metadata.keyLength,
-        accessControlConditions: metadata.accessControlConditions,
-        chain: metadata.chain,
+        encryptedCid: encrypted.ciphertext,
+        dataToEncryptHash: encrypted.dataToEncryptHash,
+        encryptedKey: encrypted.ciphertext, // Same as encryptedCid for direct Lit encryption
+        keyHash: encrypted.dataToEncryptHash,
+        iv: '', // Not used for direct text encryption
+        algorithm: 'AES-GCM',
+        keyLength: 256,
+        accessControlConditions,
+        chain,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

@@ -9,7 +9,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from haven_cli.plugins.base import ArchiverPlugin, ArchiveResult as PluginArchiveResult
@@ -99,9 +99,6 @@ class JobExecutor:
         # Initialize source tracker for persistent known source storage
         data_dir = Path(self._config.get("data_dir", Path.home() / ".haven" / "scheduler"))
         self._source_tracker = SourceTracker(data_dir)
-        
-        # In-memory cache for backwards compatibility
-        self._known_sources: Dict[str, Set[str]] = {}
         
         # Concurrency control for archiving
         self._max_concurrent_archives = self._config.get("max_concurrent_archives", 3)
@@ -318,18 +315,10 @@ class JobExecutor:
     def _mark_source_known(self, plugin_name: str, source_id: str) -> None:
         """Mark a source as known (already archived).
         
-        Updates both the in-memory cache and the persistent tracker.
-        
         Args:
             plugin_name: Name of the plugin
             source_id: ID of the source to mark as known
         """
-        # Update in-memory cache (backwards compatibility)
-        if plugin_name not in self._known_sources:
-            self._known_sources[plugin_name] = set()
-        self._known_sources[plugin_name].add(source_id)
-        
-        # Update persistent tracker
         self._source_tracker.add(plugin_name, source_id)
     
     async def _archive_source(

@@ -2,6 +2,12 @@
 
 Complete reference for Haven CLI's Python API.
 
+> **Related Documentation:**
+> - [API Reference](API_REFERENCE.md) - Data format specification and SDK usage
+> - [Integration Guide](INTEGRATION_GUIDE.md) - Developer integration guide
+> - [Arkiv Data Format](ARKIV_FORMAT.md) - Arkiv entity format details
+> - [Migration Notes](MIGRATION_NOTES.md) - Data format migration guide
+
 ## Table of Contents
 
 1. [Configuration API](#configuration-api)
@@ -627,6 +633,89 @@ async def upload_to_synapse(file_path: str) -> str:
         
         return result["cid"]
 ```
+
+---
+
+## Upload Response Format
+
+When uploading videos through the pipeline, the response follows the Haven Cross-Application Data Format v1.0.0.
+
+### Success Response
+
+```python
+{
+    "entity_key": "0x...",           # Arkiv entity key
+    "filecoin_cid": "Qm...",         # Filecoin CID (filecoin_root_cid)
+    "vlm_cid": "Qm...",              # VLM analysis CID (vlm_json_cid)
+    "format_version": "1.0.0"        # Data format version
+}
+```
+
+### Entity Data Format
+
+The uploaded entity follows the Haven Cross-Application Data Format v1.0.0, ensuring compatibility with haven-player and haven-dapp.
+
+#### Payload Fields (Private)
+
+```python
+{
+    "filecoin_root_cid": "Qm...",           # CID on Filecoin
+    "is_encrypted": True,                   # Encryption status
+    "cid_hash": "sha256...",                # SHA256 of CID
+    "vlm_json_cid": "Qm...",                # VLM analysis CID
+    "lit_encryption_metadata": "{...}",     # Lit encryption metadata
+    "cid_encryption_metadata": "{...}",     # CID encryption metadata
+    "segment_metadata": {...},              # Multi-segment info
+    "duration": 300.5,                      # Duration in seconds
+    "file_size": 10485760                   # File size in bytes
+}
+```
+
+#### Attributes Fields (Public)
+
+```python
+{
+    "title": "Video Title",                 # Video title
+    "is_encrypted": 1,                      # 0 or 1 (integer)
+    "cid_hash": "sha256...",                # CID hash
+    "created_at": "2026-02-20T10:00:00Z",   # ISO8601 timestamp
+    "updated_at": "2026-02-20T10:00:00Z",   # ISO8601 timestamp
+    "creator_handle": "@user",              # Content creator
+    "mint_id": "...",                       # NFT mint identifier
+    "analysis_model": "zai-org/glm-4.6v-flash"  # VLM model
+}
+```
+
+### Accessing Entity Data
+
+```python
+from haven_cli.services.arkiv_sync import ArkivSyncClient, build_arkiv_config
+
+# Create client
+config = build_arkiv_config()
+client = ArkivSyncClient(config)
+
+# Find entity by CID hash
+import hashlib
+cid_hash = hashlib.sha256(cid.encode()).hexdigest()
+entity = client.find_existing_entity(cid_hash)
+
+if entity:
+    # Access entity data
+    payload = entity.get('payload', {})
+    attributes = entity.get('attributes', {})
+    
+    # Get Filecoin CID
+    filecoin_cid = payload.get('filecoin_root_cid')
+    
+    # Check encryption status
+    is_encrypted = payload.get('is_encrypted', False)
+    
+    # Get title
+    title = attributes.get('title')
+```
+
+See [Arkiv Data Format](ARKIV_FORMAT.md) for complete format specification.
 
 ---
 

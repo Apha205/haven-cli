@@ -22,7 +22,7 @@ from typing import List, TYPE_CHECKING
 from PIL import Image
 
 from haven_cli.media.frames import create_sprite_image, extract_frames_uniform
-from haven_cli.media.exceptions import VideoMetadataError
+from haven_cli.media.exceptions import FFmpegError, VideoMetadataError
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -152,6 +152,13 @@ async def calculate_video_phash(
 
     except VideoHashError:
         raise
+    except FFmpegError as e:
+        # Preserve FFmpeg error details including stderr for debugging
+        raise VideoHashError(
+            f"Failed to calculate video pHash: {e.message} "
+            f"(returncode: {e.returncode}, stderr: {e.stderr!r})",
+            path=str(video_path),
+        ) from e
     except Exception as e:
         raise VideoHashError(
             f"Failed to calculate video pHash: {e}",

@@ -8,7 +8,19 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 app = typer.Typer(
-    help="Upload files to Filecoin network.",
+    help="""Upload files to Filecoin network.
+    
+Creates Arkiv entities with standardized data format compatible with
+haven-player (Gold Standard) and haven-dapp.
+
+Key Fields:
+  • filecoin_root_cid - CID on Filecoin (private payload)
+  • is_encrypted - Encryption status
+  • cid_hash - SHA256 hash for duplicate detection
+  • vlm_json_cid - VLM analysis CID
+
+For format details: haven-cli/docs/ARKIV_FORMAT.md
+""",
     no_args_is_help=True,
 )
 console = Console()
@@ -52,6 +64,22 @@ def upload(
         "-c",
         help="Path to configuration file.",
     ),
+    title: Optional[str] = typer.Option(
+        None,
+        "--title",
+        "-t",
+        help="Video title (defaults to filename).",
+    ),
+    creator: Optional[str] = typer.Option(
+        None,
+        "--creator",
+        help="Creator handle/channel identifier (e.g., @username).",
+    ),
+    source: Optional[str] = typer.Option(
+        None,
+        "--source",
+        help="Original source URL for provenance tracking.",
+    ),
 ) -> None:
     """Upload a file to Filecoin network.
     
@@ -62,10 +90,21 @@ def upload(
     4. Upload - Upload to Filecoin network
     5. Sync - Sync metadata to Arkiv blockchain (optional, skip with --no-arkiv)
     
+    The created Arkiv entity uses the Haven Cross-Application Data Format v1.0.0,
+    ensuring compatibility with haven-player (Gold Standard) and haven-dapp.
+    
+    Key entity fields:
+    • filecoin_root_cid - CID of video on Filecoin (private payload)
+    • is_encrypted - Encryption status (boolean in payload, 0/1 in attributes)
+    • cid_hash - SHA256 hash for duplicate detection (payload & attributes)
+    • vlm_json_cid - CID of VLM analysis JSON (private payload)
+    • lit_encryption_metadata - Lit Protocol metadata (private payload)
+    
     Example:
-        haven upload video.mp4
-        haven upload video.mp4 --encrypt --dataset 123
-        haven upload video.mp4 --no-vlm --no-arkiv
+        haven upload file video.mp4
+        haven upload file video.mp4 --encrypt --dataset 123
+        haven upload file video.mp4 --no-vlm --no-arkiv
+        haven upload file video.mp4 --title "My Video" --creator "@user" --source "https://example.com"
     """
     import asyncio
 
@@ -98,6 +137,9 @@ def upload(
         "upload_enabled": upload_enabled,
         "arkiv_sync_enabled": sync_enabled,
         "dataset_id": dataset_id,
+        "title": title,
+        "creator_handle": creator,
+        "source_uri": source,
     }
     
     # Create pipeline context

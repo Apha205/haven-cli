@@ -123,14 +123,21 @@ class IngestStep(PipelineStep):
                 # else: "continue" (default) - proceed with ingestion
                 # or "skip" - skip remaining processing (not implemented yet)
             
+            # Get metadata overrides from CLI options
+            cli_title = context.options.get("title")
+            cli_creator = context.options.get("creator_handle")
+            cli_source = context.options.get("source_uri")
+            
             # Create video metadata
             video_metadata = VideoMetadata(
                 path=str(video_path),
-                title=video_path.stem,
+                title=cli_title or video_path.stem,
                 duration=duration,
                 file_size=file_size,
                 mime_type=mime_type,
                 phash=phash,
+                creator_handle=cli_creator or "",
+                source_uri=cli_source or "",
                 width=tech_metadata.width if tech_metadata else 0,
                 height=tech_metadata.height if tech_metadata else 0,
                 fps=tech_metadata.fps if tech_metadata else 0.0,

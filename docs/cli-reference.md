@@ -66,6 +66,19 @@ This command processes a single file through the pipeline:
 4. **Upload** - Upload to Filecoin network
 5. **Sync** - Sync metadata to Arkiv blockchain (optional, skip with `--no-arkiv`)
 
+### Data Format
+
+Uploaded entities use the Haven Cross-Application Data Format v1.0.0, ensuring compatibility with haven-player and haven-dapp.
+
+**Key Fields:**
+- `filecoin_root_cid` - CID of video on Filecoin (stored in private payload)
+- `is_encrypted` - Encryption status (`true`/`false` in payload, `0`/`1` in attributes)
+- `cid_hash` - SHA256 hash of CID (stored in both payload and attributes)
+- `vlm_json_cid` - CID of VLM analysis JSON
+- `lit_encryption_metadata` - Lit Protocol encryption metadata
+
+For complete format details, see [Arkiv Data Format](ARKIV_FORMAT.md).
+
 ### Examples
 
 ```bash

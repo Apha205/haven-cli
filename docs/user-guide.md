@@ -149,6 +149,28 @@ haven upload video.mp4  # encryption enabled by config
 haven upload video.mp4 --no-arkiv
 ```
 
+### Data Format
+
+Haven CLI uses the standardized Haven Cross-Application Data Format v1.0.0, ensuring full compatibility with haven-player (Gold Standard) and haven-dapp.
+
+#### Key Fields
+
+**Payload Fields (Private):**
+- `filecoin_root_cid` - CID of video on Filecoin
+- `is_encrypted` - Boolean encryption status
+- `cid_hash` - SHA256 hash of CID
+- `vlm_json_cid` - CID of VLM analysis
+- `lit_encryption_metadata` - Lit Protocol metadata
+
+**Attributes Fields (Public):**
+- `title` - Video title
+- `is_encrypted` - Integer 0 or 1
+- `cid_hash` - SHA256 hash (for duplicate detection)
+- `created_at` - ISO8601 timestamp
+- `creator_handle` - Content creator
+
+For complete format details, see [Arkiv Data Format](ARKIV_FORMAT.md) and [Migration Notes](MIGRATION_NOTES.md).
+
 ## Plugins
 
 ### List Available Plugins

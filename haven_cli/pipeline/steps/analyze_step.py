@@ -187,6 +187,9 @@ class AnalyzeStep(ConditionalStep):
             if not os.path.exists(ai_json_path):
                 ai_json_path = None  # File wasn't saved (save_to_file may be disabled)
             
+            # Get the model name from VLM config
+            analysis_model = self._vlm_config.engine.model_name if self._vlm_config else None
+            
             # Create analysis result
             analysis_result = AIAnalysisResult(
                 video_path=video_path,
@@ -194,6 +197,7 @@ class AnalyzeStep(ConditionalStep):
                 tags=tags,
                 confidence=confidence,
                 ai_json_path=ai_json_path,
+                analysis_model=analysis_model,
             )
             
             # Store in context
@@ -593,12 +597,13 @@ class MockAnalyzeStep(ConditionalStep):
         # Calculate mock confidence
         confidence = 0.85
         
-        # Create analysis result
+        # Create analysis result with mock model
         analysis_result = AIAnalysisResult(
             video_path=video_path,
             timestamps=mock_timestamps,
             tags=mock_tags,
             confidence=confidence,
+            analysis_model="mock-vlm-model",
         )
         
         context.analysis_result = analysis_result

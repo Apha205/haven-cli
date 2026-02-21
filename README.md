@@ -45,6 +45,36 @@ haven run
 haven-tui
 ```
 
+## Data Format Standardization
+
+haven-cli now uses the Haven Cross-Application Data Format, ensuring full compatibility with:
+- haven-player (Gold Standard)
+- haven-dapp
+
+### Key Field Names
+
+When working with Arkiv entities created by haven-cli:
+
+**Payload Fields (Private):**
+- `filecoin_root_cid` - The Filecoin CID for video content
+- `is_encrypted` - Boolean indicating encryption status
+- `cid_hash` - SHA256 hash of the CID
+- `vlm_json_cid` - CID of VLM analysis JSON
+- `lit_encryption_metadata` - JSON string of Lit encryption metadata
+- `segment_metadata` - Multi-segment recording info
+
+**Attributes Fields (Public):**
+- `title` - Video title
+- `is_encrypted` - Integer 0 or 1
+- `cid_hash` - SHA256 hash of CID
+- `created_at` - ISO8601 timestamp
+- `updated_at` - ISO8601 timestamp
+- `creator_handle` - Content creator
+- `mint_id` - NFT mint identifier
+- `analysis_model` - VLM model used
+
+For detailed format documentation, see [Arkiv Data Format](docs/ARKIV_FORMAT.md) and [Migration Notes](docs/MIGRATION_NOTES.md).
+
 ## Documentation
 
 ### Haven CLI
@@ -54,6 +84,8 @@ haven-tui
 - [Plugins](docs/plugins.md) - Plugin system documentation
 - [API Reference](docs/api.md) - Python API documentation
 - [CLI Reference](docs/cli-reference.md) - Command-line reference
+- [Arkiv Data Format](docs/ARKIV_FORMAT.md) - Data format specification
+- [Migration Notes](docs/MIGRATION_NOTES.md) - Format migration guide
 - [Troubleshooting](docs/troubleshooting.md) - Common issues and solutions
 
 ### Haven TUI

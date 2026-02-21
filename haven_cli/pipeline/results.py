@@ -168,7 +168,7 @@ class StepResult:
     @property
     def cid(self) -> Optional[str]:
         """Get CID from result data if present (for upload results)."""
-        return self.data.get("cid") or self.data.get("root_cid")
+        return self.data.get("cid")
     
     @classmethod
     def pending(cls, step_name: str) -> "StepResult":
@@ -254,7 +254,7 @@ class PipelineResult:
     
     @property
     def cid(self) -> Optional[str]:
-        """Alias for final_cid for backward compatibility."""
+        """Alias for final_cid."""
         return self.final_cid
     
     def get_step_result(self, step_name: str) -> Optional[StepResult]:

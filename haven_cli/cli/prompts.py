@@ -4,6 +4,8 @@ This module provides standardized prompts for dangerous operations,
 confirmation workflows, and user input handling.
 """
 
+from __future__ import annotations
+
 from typing import TypeVar
 
 import typer

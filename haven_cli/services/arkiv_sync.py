@@ -277,6 +277,8 @@ def _build_attributes(context: PipelineContext) -> dict[str, str | int]:
     Attributes are indexed and queryable on-chain for searching
     and duplicate detection.
     
+    Aligned with gold standard (haven-player) for cross-application compatibility.
+    
     Args:
         context: Pipeline context with video metadata
         
@@ -307,24 +309,37 @@ def _build_attributes(context: PipelineContext) -> dict[str, str | int]:
     if video_metadata and video_metadata.phash:
         attributes["phash"] = video_metadata.phash
     
-    # CID hash for duplicate detection
+    # Mint ID for NFT tracking
+    if video_metadata and video_metadata.mint_id:
+        attributes["mint_id"] = video_metadata.mint_id
+    
+    # CID hash for duplicate detection (present for both encrypted and non-encrypted)
     if context.upload_result and context.upload_result.root_cid:
         cid_hash = hashlib.sha256(
             context.upload_result.root_cid.encode()
         ).hexdigest()
         attributes["cid_hash"] = cid_hash
-        attributes["root_cid"] = context.upload_result.root_cid
     
-    # MIME type
-    if video_metadata and video_metadata.mime_type:
-        attributes["mime_type"] = video_metadata.mime_type
-    
-    # Encryption status
+    # Encryption status - use int (0 or 1) for gold standard compatibility
     if context.encryption_metadata:
         attributes["is_encrypted"] = 1
     
+    # Encrypted CID - stored in attributes (already encrypted, so safe for public)
+    if context.cid_encryption_metadata:
+        attributes["encrypted_cid"] = context.cid_encryption_metadata.encrypted_cid
+    
+    # Analysis model - track which VLM was used
+    if context.analysis_result and context.analysis_result.analysis_model:
+        attributes["analysis_model"] = context.analysis_result.analysis_model
+    
     # Created timestamp
     attributes["created_at"] = datetime.now(timezone.utc).isoformat()
+    
+    # Set updated_at (for new uploads, same as created_at)
+    if video_metadata and video_metadata.updated_at:
+        attributes["updated_at"] = video_metadata.updated_at.isoformat()
+    else:
+        attributes["updated_at"] = attributes["created_at"]
     
     return attributes
 
@@ -337,51 +352,95 @@ def _build_payload(context: PipelineContext) -> dict[str, Any]:
     It includes only essential data that cannot be recalculated or is
     needed for restoration.
     
+    Aligned with gold standard (haven-player) for cross-application compatibility.
+    
     Args:
         context: Pipeline context with video metadata
         
     Returns:
         Dictionary payload for Arkiv entity
     """
-    payload: dict[str, Any] = {
-        "version": "1.0",
-        "type": "video",
-        "archived_at": datetime.now(timezone.utc).isoformat(),
-    }
+    # Build minimal payload with only essential encrypted/sensitive data
+    payload: dict[str, Any] = {}
     
-    # Video metadata
-    video_metadata = context.video_metadata
-    if video_metadata:
-        payload["duration"] = video_metadata.duration
-        payload["file_size"] = video_metadata.file_size
-        if video_metadata.codec:
-            payload["codec"] = video_metadata.codec
-    
-    # Upload result - Filecoin CIDs
-    if context.upload_result:
-        payload["root_cid"] = context.upload_result.root_cid
-        if context.upload_result.piece_cid:
-            payload["piece_cid"] = context.upload_result.piece_cid
-        # Include VLM JSON CID if available (primary VLM archival method)
-        if context.upload_result.vlm_json_cid:
-            payload["vlm_json_cid"] = context.upload_result.vlm_json_cid
-    
-    # Analysis result
-    if context.analysis_result:
-        payload["has_ai_data"] = True
-        payload["tag_count"] = len(context.analysis_result.tags)
-        payload["timestamp_count"] = len(context.analysis_result.timestamps)
-        if context.analysis_result.confidence > 0:
-            payload["analysis_confidence"] = context.analysis_result.confidence
-    
-    # Encryption info
+    # For encrypted videos: encrypted_cid is in attributes (public), actual CID is decrypted during restore
+    # Store CID encryption metadata in payload so we can decrypt encrypted_cid during restore
     if context.encryption_metadata:
-        payload["encrypted"] = True
-        payload["encryption_chain"] = context.encryption_metadata.chain
-        if context.encryption_metadata.ciphertext:
-            payload["encryption_ciphertext"] = context.encryption_metadata.ciphertext
-        if context.encryption_metadata.data_to_encrypt_hash:
-            payload["encryption_data_hash"] = context.encryption_metadata.data_to_encrypt_hash
+        if context.cid_encryption_metadata:
+            cid_metadata: dict[str, Any] = {
+                "version": "hybrid-v1",
+                "encryptedKey": context.cid_encryption_metadata.encrypted_key,
+                "keyHash": context.cid_encryption_metadata.key_hash,
+                "iv": context.cid_encryption_metadata.iv,
+                "algorithm": "AES-GCM",
+                "keyLength": 256,
+                "accessControlConditions": context.cid_encryption_metadata.access_control_conditions,
+                "chain": context.cid_encryption_metadata.chain,
+                "encryptedCid": context.cid_encryption_metadata.encrypted_cid,
+            }
+            payload["cid_encryption_metadata"] = json.dumps(cid_metadata)
+        
+        # Video file encryption metadata (REQUIRED for decryption - contains accessControlConditions, dataToEncryptHash, chain)
+        # NOTE: ciphertext is NOT included here - it's already on Filecoin and would be a duplicate
+        # The decryption function will use the Filecoin data instead of metadata.ciphertext
+        if context.encryption_metadata:
+            # Build proper lit_encryption_metadata structure for decryption
+            lit_metadata: dict[str, Any] = {
+                "version": "hybrid-v1",
+                "encryptedKey": context.encryption_metadata.encrypted_key,
+                "keyHash": context.encryption_metadata.key_hash,
+                "iv": context.encryption_metadata.iv,
+                "algorithm": "AES-GCM",
+                "keyLength": 256,
+                "accessControlConditions": context.encryption_metadata.access_control_conditions,
+                "chain": context.encryption_metadata.chain,
+            }
+            
+            # Add optional fields if available
+            if context.video_metadata:
+                lit_metadata["originalMimeType"] = context.video_metadata.mime_type
+                lit_metadata["originalSize"] = context.video_metadata.file_size
+            
+            # Add original hash if available from encryption result
+            original_hash = context.get_step_data("encrypt", "original_hash")
+            if original_hash:
+                lit_metadata["originalHash"] = original_hash
+            
+            payload["lit_encryption_metadata"] = json.dumps(lit_metadata)
+    else:
+        # For non-encrypted videos, store filecoin_root_cid in payload (not in attributes for consistency)
+        if context.upload_result and context.upload_result.root_cid:
+            payload["filecoin_root_cid"] = context.upload_result.root_cid
+    
+    # cid_hash is needed for deduplication during restore (both encrypted and non-encrypted)
+    if context.upload_result and context.upload_result.root_cid:
+        cid_hash = hashlib.sha256(
+            context.upload_result.root_cid.encode()
+        ).hexdigest()
+        payload["cid_hash"] = cid_hash
+    
+    # Include VLM JSON CID if available (primary VLM archival method)
+    if context.upload_result and context.upload_result.vlm_json_cid:
+        payload["vlm_json_cid"] = context.upload_result.vlm_json_cid
+    
+    # Essential flag for restore - use int (0 or 1) for gold standard compatibility
+    payload["is_encrypted"] = 1 if context.encryption_metadata else 0
+    
+    # Segment metadata for multi-segment recordings
+    if context.segment_metadata:
+        segment_data: dict[str, Any] = {
+            "segment_index": context.segment_metadata.segment_index,
+        }
+        if context.segment_metadata.start_timestamp:
+            segment_data["start_timestamp"] = context.segment_metadata.start_timestamp
+        if context.segment_metadata.end_timestamp:
+            segment_data["end_timestamp"] = context.segment_metadata.end_timestamp
+        if context.segment_metadata.mint_id:
+            segment_data["mint_id"] = context.segment_metadata.mint_id
+        if context.segment_metadata.recording_session_id:
+            segment_data["recording_session_id"] = context.segment_metadata.recording_session_id
+        
+        payload["segment_metadata"] = segment_data
     
     return payload
 

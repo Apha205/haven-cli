@@ -9,7 +9,7 @@ import typer
 from rich.console import Console
 
 from haven_cli import __app_name__, __version__
-from haven_cli.cli import config, download, jobs, plugins, run, tui, upload
+from haven_cli.cli import config, download, entity, jobs, plugins, run, tui, upload
 from haven_cli.cli.exit_codes import ExitCode
 
 # Create the main Typer app
@@ -28,6 +28,7 @@ console = Console()
 app.add_typer(run.app, name="run")
 app.add_typer(upload.app, name="upload")
 app.add_typer(download.app, name="download")
+app.add_typer(entity.app, name="entity")
 app.add_typer(jobs.app, name="jobs")
 app.add_typer(plugins.app, name="plugins")
 app.add_typer(config.app, name="config")

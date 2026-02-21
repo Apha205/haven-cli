@@ -112,13 +112,16 @@ class TestFFmpegError:
     
     def test_stderr_truncation(self):
         """Test that long stderr is truncated in string representation."""
-        long_stderr = "Error: " + "x" * 1000
+        very_long_stderr = "Error: " + "x" * 3000
         error = FFmpegError(
             "FFmpeg failed",
-            stderr=long_stderr,
+            stderr=very_long_stderr,
         )
         error_str = str(error)
-        assert len(error_str) < 500  # Should be truncated
+        # Should be truncated to 2000 chars + overhead, so less than original
+        assert len(error_str) < len(very_long_stderr)
+        # But should include more than the old 200 char limit
+        assert len(error_str) > 500
 
 
 class TestMimeTypeError:

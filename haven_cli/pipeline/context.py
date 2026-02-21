@@ -36,6 +36,8 @@ class VideoMetadata:
         audio_channels: Number of audio channels
         container: Container format (mp4, mkv, etc.)
         has_audio: Whether the video has audio
+        created_at: When the video was created
+        updated_at: When the video was last updated
     """
     
     path: str
@@ -46,6 +48,7 @@ class VideoMetadata:
     phash: str = ""
     creator_handle: str = ""
     source_uri: str = ""
+    mint_id: Optional[str] = None
     has_ai_data: bool = False
     width: int = 0
     height: int = 0
@@ -56,6 +59,8 @@ class VideoMetadata:
     audio_channels: int = 0
     container: str = ""
     has_audio: bool = False
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 @dataclass
@@ -70,6 +75,7 @@ class AIAnalysisResult:
     tags: Dict[str, float] = field(default_factory=dict)
     confidence: float = 0.0
     ai_json_path: Optional[str] = None  # Path to the .AI.json file
+    analysis_model: Optional[str] = None  # VLM model used for analysis (e.g., "llava-1.5-7b")
 
 
 @dataclass
@@ -81,8 +87,57 @@ class EncryptionMetadata:
     
     ciphertext: str = ""
     data_to_encrypt_hash: str = ""
+    encrypted_key: str = ""       # Encrypted symmetric key (base64)
+    key_hash: str = ""            # Hash of the encryption key
+    iv: str = ""                  # Initialization vector (base64)
     access_control_conditions: List[Dict[str, Any]] = field(default_factory=list)
     chain: str = "ethereum"
+
+
+@dataclass
+class CidEncryptionMetadata:
+    """Metadata about CID-level encryption via Lit Protocol.
+    
+    Used when the CID itself is encrypted separately from the content.
+    This allows different access control for the CID vs the content.
+    
+    Attributes:
+        encrypted_key: Encrypted symmetric key (base64)
+        key_hash: Hash of the encryption key
+        iv: Initialization vector (base64)
+        access_control_conditions: Lit Protocol access control conditions
+        chain: Blockchain for access control (default: ethereum)
+        encrypted_cid: The encrypted CID string
+    """
+    
+    encrypted_key: str = ""
+    key_hash: str = ""
+    iv: str = ""
+    access_control_conditions: List[Dict[str, Any]] = field(default_factory=list)
+    chain: str = "ethereum"
+    encrypted_cid: str = ""
+
+
+@dataclass
+class SegmentMetadata:
+    """Metadata for a multi-segment recording.
+    
+    Used when videos are recorded in multiple segments (e.g., live streaming
+    with segments). This metadata helps reconstruct multi-segment videos.
+    
+    Attributes:
+        segment_index: Segment number (0, 1, 2, ...)
+        start_timestamp: ISO8601 timestamp when segment started
+        end_timestamp: ISO8601 timestamp when segment ended
+        mint_id: NFT mint identifier associated with this segment
+        recording_session_id: UUID identifying the recording session
+    """
+    
+    segment_index: int = 0
+    start_timestamp: Optional[str] = None  # ISO8601
+    end_timestamp: Optional[str] = None    # ISO8601
+    mint_id: Optional[str] = None
+    recording_session_id: Optional[str] = None
 
 
 @dataclass
@@ -98,6 +153,7 @@ class UploadResult:
     transaction_hash: str = ""
     encryption_metadata: Optional[EncryptionMetadata] = None
     vlm_json_cid: Optional[str] = None  # CID of the uploaded VLM AI.json file
+    cid_hash: Optional[str] = None  # SHA256 hash of root_cid for deduplication
 
 
 @dataclass
@@ -121,6 +177,8 @@ class PipelineContext:
         analysis_result: VLM analysis result (if performed)
         encryption_metadata: Encryption details (if encrypted)
         upload_result: Filecoin upload result (if uploaded)
+        cid_encryption_metadata: CID-level encryption metadata (if encrypted)
+        segment_metadata: Multi-segment recording metadata (if applicable)
         arkiv_entity_key: Arkiv blockchain entity key (if synced)
         errors: List of errors encountered during processing
         created_at: When this context was created
@@ -137,6 +195,8 @@ class PipelineContext:
     encryption_metadata: Optional[EncryptionMetadata] = None
     encrypted_video_path: Optional[str] = None
     upload_result: Optional[UploadResult] = None
+    cid_encryption_metadata: Optional[CidEncryptionMetadata] = None
+    segment_metadata: Optional[SegmentMetadata] = None
     arkiv_entity_key: Optional[str] = None
     errors: List[Dict[str, Any]] = field(default_factory=list)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

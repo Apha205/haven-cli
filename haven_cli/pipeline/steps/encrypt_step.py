@@ -134,6 +134,9 @@ class EncryptStep(ConditionalStep):
             encryption_metadata = EncryptionMetadata(
                 ciphertext=encryption_result.get("ciphertext_path", ""),
                 data_to_encrypt_hash=encryption_result.get("data_to_encrypt_hash", ""),
+                encrypted_key=encryption_result.get("encrypted_key", ""),
+                key_hash=encryption_result.get("key_hash", ""),
+                iv=encryption_result.get("iv", ""),
                 access_control_conditions=access_conditions,
                 chain=encryption_result.get("chain", "ethereum"),
             )
@@ -141,6 +144,10 @@ class EncryptStep(ConditionalStep):
             # Store in context
             context.encryption_metadata = encryption_metadata
             context.encrypted_video_path = encryption_result.get("ciphertext_path")
+            
+            # Store original hash for lit_encryption_metadata
+            if encryption_result.get("original_hash"):
+                context.set_step_data("encrypt", "original_hash", encryption_result.get("original_hash"))
             
             # Save encryption metadata to database
             if context.video_id:
@@ -374,6 +381,11 @@ class EncryptStep(ConditionalStep):
             encrypted_path = result.get("encryptedFilePath", "")
             metadata = result.get("metadata", {})
             
+            # Extract Lit encryption metadata for lit_encryption_metadata
+            encrypted_key = metadata.get("encryptedKey", "")
+            key_hash = metadata.get("keyHash", "")
+            iv = metadata.get("iv", "")
+            
             # Calculate original file hash for integrity verification
             original_hash = hashlib.sha256(open(video_path, "rb").read()).hexdigest()
             
@@ -399,6 +411,9 @@ class EncryptStep(ConditionalStep):
                 "chain": chain,
                 "original_hash": original_hash,
                 "metadata_path": result.get("metadataPath", ""),
+                "encrypted_key": encrypted_key,
+                "key_hash": key_hash,
+                "iv": iv,
             }
             
         finally:
@@ -640,6 +655,11 @@ class EncryptStep(ConditionalStep):
             "ciphertext": metadata.ciphertext,
             "data_to_encrypt_hash": metadata.data_to_encrypt_hash,
             "dataToEncryptHash": metadata.data_to_encrypt_hash,  # camelCase for JS compatibility
+            "encrypted_key": metadata.encrypted_key,
+            "encryptedKey": metadata.encrypted_key,  # camelCase for JS compatibility
+            "key_hash": metadata.key_hash,
+            "keyHash": metadata.key_hash,  # camelCase for JS compatibility
+            "iv": metadata.iv,
             "access_control_conditions": metadata.access_control_conditions,
             "accessControlConditions": metadata.access_control_conditions,  # camelCase
             "chain": metadata.chain,

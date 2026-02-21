@@ -264,22 +264,7 @@ class HavenConfig:
         
         if self.scheduler.state_file is None:
             self.scheduler.state_file = self.data_dir / "scheduler_state.json"
-        
-        # Propagate network mode to legacy pipeline settings for backward compatibility
-        self._propagate_network_mode()
     
-    def _propagate_network_mode(self) -> None:
-        """Validate and log blockchain network mode configuration.
-        
-        Network endpoints (Lit, Filecoin, Arkiv) are now retrieved directly
-        from blockchain config methods (get_lit_network, get_filecoin_rpc_url,
-        get_arkiv_rpc_url) rather than being copied to pipeline config.
-        
-        This method now serves as a hook for any post-init validation
-        or logging related to network configuration.
-        """
-
-
 def load_config(
     config_path: Optional[Path] = None,
     env_prefix: str = "HAVEN_"
@@ -418,10 +403,6 @@ def _load_from_env(config: HavenConfig, prefix: str) -> HavenConfig:
     # Blockchain network mode - this is the primary network setting
     if env_val := os.environ.get(f"{prefix}NETWORK_MODE"):
         config.blockchain.network_mode = env_val
-    # Also check legacy HAVEN_NETWORK_MODE without prefix for convenience
-    if env_val := os.environ.get("HAVEN_NETWORK_MODE"):
-        config.blockchain.network_mode = env_val
-    
     # Blockchain endpoint overrides
     if env_val := os.environ.get(f"{prefix}LIT_NETWORK_OVERRIDE"):
         config.blockchain.lit_network_override = env_val
@@ -522,9 +503,6 @@ def _load_from_env(config: HavenConfig, prefix: str) -> HavenConfig:
         config.data_dir = Path(env_val)
     if env_val := os.environ.get(f"{prefix}DATABASE_URL"):
         config.database_url = env_val
-    
-    # After loading env vars, propagate network mode to individual settings
-    config._propagate_network_mode()
     
     return config
 
@@ -700,10 +678,6 @@ def set_config_value(section: str, key: str, value: Any, config_path: Optional[P
     
     # Set the new value
     setattr(section_obj, key, converted_value)
-    
-    # If setting blockchain.network_mode, propagate to individual settings
-    if section == "blockchain" and key == "network_mode":
-        config._propagate_network_mode()
     
     # Save config
     save_config(config, config_path)

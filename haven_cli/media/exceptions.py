@@ -46,7 +46,9 @@ class FFmpegError(MediaError):
         if self.returncode is not None:
             parts.append(f"(returncode: {self.returncode})")
         if self.stderr:
-            parts.append(f"(stderr: {self.stderr[:200]})")
+            # Include full stderr for debugging (truncated to 2000 chars to avoid log spam)
+            stderr_display = self.stderr[:2000] if len(self.stderr) > 2000 else self.stderr
+            parts.append(f"(stderr: {stderr_display!r})")
         return " ".join(parts)
 
 

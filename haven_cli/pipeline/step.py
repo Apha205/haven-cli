@@ -236,6 +236,20 @@ class PipelineStep(ABC):
         """
         return False
     
+    async def preflight_check(self, context: PipelineContext) -> Dict[str, Any]:
+        """Perform preflight checks and return diagnostic information.
+        
+        Override in subclasses to provide diagnostic information about
+        step configuration and whether it will execute or skip.
+        
+        Args:
+            context: The pipeline context
+            
+        Returns:
+            Dictionary with diagnostic information
+        """
+        return {"step": self.name, "will_execute": True}
+    
     async def on_start(self, context: PipelineContext) -> None:
         """Hook called before step processing begins.
         
@@ -355,7 +369,32 @@ class ConditionalStep(PipelineStep):
     
     async def should_skip(self, context: PipelineContext) -> bool:
         """Skip if the step is not enabled in context options."""
-        enabled = context.options.get(self.enabled_option, self.default_enabled)
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        context_value = context.options.get(self.enabled_option)
+        config_value = self._config.get(self.enabled_option)
+        default_value = self.default_enabled
+        
+        # Determine effective value and source
+        if context_value is not None:
+            enabled = context_value
+            source = "context.options"
+        elif config_value is not None:
+            enabled = config_value
+            source = "step config"
+        else:
+            enabled = default_value
+            source = "default"
+        
+        # Only log at debug level for most steps to avoid noise
+        # Cleanup step has its own detailed logging
+        if self.name != "cleanup":
+            logger.debug(
+                f"Step '{self.name}' enabled check: {enabled} (from {source}, "
+                f"context={context_value}, config={config_value}, default={default_value})"
+            )
+        
         return not enabled
     
     async def _get_skip_reason(self, context: PipelineContext) -> str:

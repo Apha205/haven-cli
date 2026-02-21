@@ -16,12 +16,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from rich.console import Console
+
 from haven_cli.pipeline.context import PipelineContext
 from haven_cli.pipeline.events import EventType
 from haven_cli.pipeline.results import StepError, StepResult
 from haven_cli.pipeline.step import ConditionalStep
 
 logger = logging.getLogger(__name__)
+
+# Console for CLI output (always visible regardless of log level)
+console = Console()
 
 
 class CleanupStep(ConditionalStep):
@@ -86,19 +91,46 @@ class CleanupStep(ConditionalStep):
         """
         # Check if cleanup is enabled - check context.options first (CLI flags), 
         # then fall back to step config (from config file)
-        enabled = context.options.get(
-            self.enabled_option, 
-            self._config.get(self.enabled_option, self.default_enabled)
+        context_enabled = context.options.get(self.enabled_option)
+        config_enabled = self._config.get(self.enabled_option)
+        default_enabled = self.default_enabled
+        
+        # Determine effective enabled state
+        if context_enabled is not None:
+            enabled = context_enabled
+            source = "context.options"
+        elif config_enabled is not None:
+            enabled = config_enabled
+            source = "step config"
+        else:
+            enabled = default_enabled
+            source = "default"
+        
+        logger.info(
+            f"Cleanup step check: enabled={enabled} (from {source}, "
+            f"context={context_enabled}, config={config_enabled}, default={default_enabled})"
         )
+        
         if not enabled:
-            self._skip_reason = "cleanup_enabled is disabled"
+            self._skip_reason = f"cleanup_enabled is disabled (source: {source})"
+            logger.info(f"Cleanup will be skipped: {self._skip_reason}")
             return True
         
         # Skip if upload didn't succeed - we need the file on Filecoin first
-        if context.upload_result is None or not context.upload_result.root_cid:
-            self._skip_reason = "upload did not complete successfully"
+        upload_succeeded = context.upload_result is not None and bool(context.upload_result.root_cid)
+        logger.info(
+            f"Cleanup upload check: upload_result={context.upload_result is not None}, "
+            f"root_cid={context.upload_result.root_cid if context.upload_result else None}"
+        )
+        
+        if not upload_succeeded:
+            self._skip_reason = "upload did not complete successfully (no root_cid)"
+            logger.warning(f"Cleanup will be skipped: {self._skip_reason}")
             return True
         
+        logger.info(f"Cleanup will proceed: enabled=True, upload succeeded (CID: {context.upload_result.root_cid})")
+        # Show console output that cleanup is starting
+        console.print("[dim]→ Starting cleanup...[/dim]")
         return False
     
     async def _get_skip_reason(self, context: PipelineContext) -> str:
@@ -127,7 +159,7 @@ class CleanupStep(ConditionalStep):
             # Collect all files to clean up
             files_to_cleanup = self._get_files_to_cleanup(context)
             
-            logger.info(f"Starting cleanup for {len(files_to_cleanup)} files")
+            logger.info(f"Starting cleanup for {len(files_to_cleanup)} files: {files_to_cleanup}")
             
             # Delete each file
             for file_path in files_to_cleanup:
@@ -139,6 +171,13 @@ class CleanupStep(ConditionalStep):
                 f"{len(self._files_missing)} files already missing, "
                 f"{self._bytes_freed} bytes freed"
             )
+            
+            # Console output (always visible regardless of log level)
+            if self._files_deleted:
+                size_str = self._format_bytes(self._bytes_freed)
+                console.print(f"[green]✓[/green] Cleanup complete: {len(self._files_deleted)} files removed ({size_str} freed)")
+            elif self._files_missing:
+                console.print(f"[dim]○ Cleanup: {len(self._files_missing)} files already removed[/dim]")
             
             # Emit cleanup complete event
             await self._emit_event(EventType.CLEANUP_COMPLETE, context, {
@@ -189,13 +228,21 @@ class CleanupStep(ConditionalStep):
         """
         files_to_cleanup = []
         
+        logger.debug(
+            f"Collecting files to cleanup: video_path={context.video_path}, "
+            f"encrypted_video_path={context.encrypted_video_path}, "
+            f"has_encryption_metadata={context.encryption_metadata is not None}"
+        )
+        
         # 1. Original video file
         if context.video_path:
             files_to_cleanup.append(context.video_path)
+            logger.debug(f"Adding original video to cleanup: {context.video_path}")
         
         # 2. Encrypted video file (if encryption was performed)
         if context.encrypted_video_path:
             files_to_cleanup.append(context.encrypted_video_path)
+            logger.debug(f"Adding encrypted video to cleanup: {context.encrypted_video_path}")
         
         # 3. Encryption metadata file (if encryption was performed)
         if context.encryption_metadata and context.encryption_metadata.ciphertext:
@@ -203,6 +250,9 @@ class CleanupStep(ConditionalStep):
             metadata_path = self._get_metadata_path(context)
             if metadata_path:
                 files_to_cleanup.append(metadata_path)
+                logger.debug(f"Adding metadata file to cleanup: {metadata_path}")
+            else:
+                logger.debug("No metadata file found for cleanup")
         
         # Remove duplicates while preserving order
         seen = set()
@@ -212,6 +262,7 @@ class CleanupStep(ConditionalStep):
                 seen.add(f)
                 unique_files.append(f)
         
+        logger.debug(f"Final cleanup list ({len(unique_files)} files): {unique_files}")
         return unique_files
     
     def _get_metadata_path(self, context: PipelineContext) -> Optional[str]:
@@ -280,8 +331,27 @@ class CleanupStep(ConditionalStep):
             
         except PermissionError:
             logger.warning(f"Permission denied deleting file: {file_path}")
+            console.print(f"[yellow]⚠[/yellow] Cleanup: Permission denied for {path.name}")
         except OSError as e:
             logger.warning(f"Error deleting file {file_path}: {e}")
+    
+    def _format_bytes(self, size_bytes: int) -> str:
+        """Format bytes in human-readable format.
+        
+        Args:
+            size_bytes: Size in bytes
+            
+        Returns:
+            Human-readable size string
+        """
+        if size_bytes < 1024:
+            return f"{size_bytes} B"
+        elif size_bytes < 1024 * 1024:
+            return f"{size_bytes / 1024:.2f} KB"
+        elif size_bytes < 1024 * 1024 * 1024:
+            return f"{size_bytes / (1024 * 1024):.2f} MB"
+        else:
+            return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
     
     async def on_skip(self, context: PipelineContext, reason: str) -> None:
         """Handle step skip.
@@ -290,4 +360,10 @@ class CleanupStep(ConditionalStep):
             context: Pipeline context
             reason: Reason for skipping
         """
-        logger.debug(f"Cleanup step skipped: {reason}")
+        logger.info(f"Cleanup step skipped: {reason}")
+        # Only show console output if cleanup was explicitly enabled but skipped
+        # (don't spam output when cleanup is disabled by default)
+        context_enabled = context.options.get(self.enabled_option)
+        config_enabled = self._config.get(self.enabled_option)
+        if context_enabled is not None or config_enabled is not None:
+            console.print(f"[dim]○ Cleanup skipped: {reason}[/dim]")

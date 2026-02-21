@@ -1,11 +1,14 @@
 """Haven upload command - Upload file to Filecoin."""
 
+import logging
 from pathlib import Path
 from typing import Optional
 
 import typer
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     help="""Upload files to Filecoin network.
@@ -130,12 +133,14 @@ def upload(
     encryption_enabled = get_config_value("encryption_enabled", False) or encrypt
     upload_enabled = get_config_value("upload_enabled", True)
     sync_enabled = get_config_value("sync_enabled", False) and not skip_arkiv
+    cleanup_enabled = get_config_value("cleanup_enabled", False)
     
     options = {
         "encrypt": encryption_enabled,
         "vlm_enabled": vlm_enabled,
         "upload_enabled": upload_enabled,
         "arkiv_sync_enabled": sync_enabled,
+        "cleanup_enabled": cleanup_enabled,
         "dataset_id": dataset_id,
         "title": title,
         "creator_handle": creator,
@@ -152,6 +157,8 @@ def upload(
     pipeline_manager = create_default_pipeline(config=config.__dict__ if config else None)
     
     async def run_pipeline() -> None:
+        from haven_cli.js_runtime.manager import JSBridgeManager
+        
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -159,16 +166,22 @@ def upload(
         ) as progress:
             task = progress.add_task("Processing...", total=None)
             
-            # Process through pipeline
-            result = await pipeline_manager.process(context)
-            
-            progress.update(task, completed=True)
-            
-            if result.success:
-                console.print(f"[green]✓[/green] Upload complete: {result.cid or 'N/A'}")
-            else:
-                console.print(f"[red]✗[/red] Upload failed: {result.error}")
-                raise typer.Exit(code=1)
+            try:
+                # Process through pipeline
+                result = await pipeline_manager.process(context)
+                
+                progress.update(task, completed=True)
+                
+                if result.success:
+                    console.print(f"[green]✓[/green] Upload complete: {result.cid or 'N/A'}")
+                else:
+                    console.print(f"[red]✗[/red] Upload failed: {result.error}")
+                    raise typer.Exit(code=1)
+            finally:
+                # CRITICAL: Shutdown JS Bridge Manager to prevent hang
+                # The background health check task keeps the event loop alive
+                logger.debug("Shutting down JS Bridge Manager...")
+                await JSBridgeManager.get_instance().shutdown()
     
     # Run the async pipeline
     asyncio.run(run_pipeline())

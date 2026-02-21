@@ -84,8 +84,12 @@ class CleanupStep(ConditionalStep):
         Returns:
             True if cleanup should be skipped
         """
-        # Check if cleanup is enabled
-        enabled = context.options.get(self.enabled_option, self.default_enabled)
+        # Check if cleanup is enabled - check context.options first (CLI flags), 
+        # then fall back to step config (from config file)
+        enabled = context.options.get(
+            self.enabled_option, 
+            self._config.get(self.enabled_option, self.default_enabled)
+        )
         if not enabled:
             self._skip_reason = "cleanup_enabled is disabled"
             return True

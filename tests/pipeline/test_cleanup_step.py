@@ -110,6 +110,65 @@ class TestCleanupStepShouldSkip:
         should_skip = await step.should_skip(context)
         
         assert should_skip is False
+    
+    @pytest.mark.asyncio
+    async def test_no_skip_when_enabled_via_step_config(self):
+        """Test cleanup runs when enabled via step config (not context options).
+        
+        This tests the fix for the bug where cleanup_enabled in the config file
+        was not being respected because the step only checked context.options.
+        """
+        step = CleanupStep(config={"cleanup_enabled": True})
+        
+        context = PipelineContext(
+            source_path=Path("/tmp/test.mp4"),
+            options={},  # cleanup_enabled NOT in context.options
+        )
+        context.upload_result = UploadResult(
+            video_path="/tmp/test.mp4",
+            root_cid="bafybeigtest123",
+        )
+        
+        should_skip = await step.should_skip(context)
+        
+        assert should_skip is False
+    
+    @pytest.mark.asyncio
+    async def test_skip_when_disabled_via_step_config(self):
+        """Test cleanup is skipped when disabled via step config."""
+        step = CleanupStep(config={"cleanup_enabled": False})
+        
+        context = PipelineContext(
+            source_path=Path("/tmp/test.mp4"),
+            options={},  # cleanup_enabled NOT in context.options
+        )
+        context.upload_result = UploadResult(
+            video_path="/tmp/test.mp4",
+            root_cid="bafybeigtest123",
+        )
+        
+        should_skip = await step.should_skip(context)
+        
+        assert should_skip is True
+    
+    @pytest.mark.asyncio
+    async def test_context_options_override_step_config(self):
+        """Test that context.options takes precedence over step config."""
+        # Step config says enabled=True, but context.options says False
+        step = CleanupStep(config={"cleanup_enabled": True})
+        
+        context = PipelineContext(
+            source_path=Path("/tmp/test.mp4"),
+            options={"cleanup_enabled": False},  # Should override step config
+        )
+        context.upload_result = UploadResult(
+            video_path="/tmp/test.mp4",
+            root_cid="bafybeigtest123",
+        )
+        
+        should_skip = await step.should_skip(context)
+        
+        assert should_skip is True
 
 
 class TestCleanupStepProcess:

@@ -578,7 +578,7 @@ class SynapseWrapperImpl implements SynapseWrapper {
           fileSize: carBytes.length,
           autoConfigureAllowances: true,
         }),
-        60000 // 60 second timeout for readiness check
+        600000 // 600 second (10 minute) timeout for readiness check
       );
 
       console.error('[synapse-wrapper] Readiness check complete, status:', readiness.status);

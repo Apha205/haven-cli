@@ -40,6 +40,11 @@ class EventType(Enum):
     SYNC_COMPLETE = auto()            # e_sync_complete
     DOWNLOAD_PROGRESS = auto()        # e_download_progress
     
+    # Cleanup events
+    CLEANUP_STARTED = auto()          # e_cleanup_started
+    CLEANUP_COMPLETE = auto()         # e_cleanup_complete
+    CLEANUP_FAILED = auto()           # e_cleanup_failed
+    
     # Pipeline lifecycle events
     PIPELINE_STARTED = auto()
     PIPELINE_COMPLETE = auto()

@@ -19,7 +19,7 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from haven_cli.config import get_config
 from haven_cli.database.connection import get_db_session

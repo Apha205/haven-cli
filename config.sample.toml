@@ -64,6 +64,12 @@ upload_enabled = true
 sync_enabled = true
 arkiv_contract = "0x0000000000000000000000000000000000000000"  # Your Arkiv contract address
 
+# Cleanup Settings
+# Remove local files after successful upload to Filecoin
+# WARNING: Only enable this after verifying uploads work correctly
+# Files deleted: original video, encrypted video (if encryption enabled), metadata file
+cleanup_enabled = false
+
 # Processing Settings
 max_concurrent_videos = 4
 retry_attempts = 3

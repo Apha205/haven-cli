@@ -145,6 +145,10 @@ class EncryptStep(ConditionalStep):
             context.encryption_metadata = encryption_metadata
             context.encrypted_video_path = encryption_result.get("ciphertext_path")
             
+            # Store metadata path for cleanup step
+            if encryption_result.get("metadata_path"):
+                context.set_step_data("encrypt", "metadata_path", encryption_result.get("metadata_path"))
+            
             # Store original hash for lit_encryption_metadata
             if encryption_result.get("original_hash"):
                 context.set_step_data("encrypt", "original_hash", encryption_result.get("original_hash"))

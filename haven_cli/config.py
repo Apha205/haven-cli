@@ -177,6 +177,9 @@ class PipelineConfig:
     max_concurrent_videos: int = 4
     retry_attempts: int = 3
     retry_delay: float = 5.0
+    
+    # Cleanup (remove local files after successful upload)
+    cleanup_enabled: bool = False
 
 
 @dataclass
@@ -482,6 +485,9 @@ def _load_from_env(config: HavenConfig, prefix: str) -> HavenConfig:
     # Note: Arkiv RPC endpoint is configured via blockchain.arkiv_rpc_override
     # or HAVEN_ARKIV_RPC_OVERRIDE environment variable
     
+    if env_val := os.environ.get(f"{prefix}CLEANUP_ENABLED"):
+        config.pipeline.cleanup_enabled = env_val.lower() in ("true", "1", "yes")
+    
     # Scheduler settings
     if env_val := os.environ.get(f"{prefix}SCHEDULER_ENABLED"):
         config.scheduler.enabled = env_val.lower() in ("true", "1", "yes")
@@ -553,6 +559,7 @@ def save_config(config: HavenConfig, path: Optional[Path] = None) -> None:
         f"encryption_enabled = {str(config.pipeline.encryption_enabled).lower()}",
         f"upload_enabled = {str(config.pipeline.upload_enabled).lower()}",
         f"sync_enabled = {str(config.pipeline.sync_enabled).lower()}",
+        f"cleanup_enabled = {str(config.pipeline.cleanup_enabled).lower()}",
         f"max_concurrent_videos = {config.pipeline.max_concurrent_videos}",
         f"retry_attempts = {config.pipeline.retry_attempts}",
         "",
@@ -934,6 +941,7 @@ def _config_to_dict(config: HavenConfig, mask_secrets: bool = True) -> dict[str,
             "encryption_enabled": config.pipeline.encryption_enabled,
             "upload_enabled": config.pipeline.upload_enabled,
             "sync_enabled": config.pipeline.sync_enabled,
+            "cleanup_enabled": config.pipeline.cleanup_enabled,
             "arkiv_contract": config.pipeline.arkiv_contract,
             "max_concurrent_videos": config.pipeline.max_concurrent_videos,
             "retry_attempts": config.pipeline.retry_attempts,

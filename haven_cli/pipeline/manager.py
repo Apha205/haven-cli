@@ -400,10 +400,29 @@ class PipelineBuilder:
         self._steps.append(SyncStep(config=step_config))
         return self
     
+    def with_cleanup(self, enabled: bool = False) -> "PipelineBuilder":
+        """Add the cleanup step to the pipeline.
+        
+        The cleanup step removes local files after successful upload:
+        - Original video file
+        - Encrypted video file (if encryption was enabled)
+        - Encryption metadata file (if encryption was enabled)
+        
+        Args:
+            enabled: Whether cleanup is enabled by default (default: False for safety)
+            
+        Returns:
+            Self for method chaining
+        """
+        from haven_cli.pipeline.steps.cleanup_step import CleanupStep
+        step_config = {**self._config, "cleanup_enabled": enabled}
+        self._steps.append(CleanupStep(config=step_config))
+        return self
+    
     def with_default_steps(self) -> "PipelineBuilder":
         """Add all default pipeline steps.
         
-        Adds: ingest → analyze → encrypt → upload → sync
+        Adds: ingest → analyze → encrypt → upload → sync → cleanup
         
         Returns:
             Self for method chaining
@@ -415,6 +434,7 @@ class PipelineBuilder:
             .with_encryption()
             .with_upload()
             .with_sync()
+            .with_cleanup()
         )
     
     def build(self) -> PipelineManager:
@@ -448,6 +468,7 @@ def create_default_pipeline(
         - encryption_enabled: Enable encryption (default: False)
         - upload_enabled: Enable Filecoin upload (default: True)
         - arkiv_sync_enabled: Enable Arkiv sync (default: False)
+        - cleanup_enabled: Enable cleanup after upload (default: False)
     
     Args:
         max_concurrent: Maximum concurrent pipeline executions
@@ -490,11 +511,13 @@ def create_default_pipeline(
     encryption_enabled = get_config_value("encryption_enabled", True)
     upload_enabled = get_config_value("upload_enabled", True)
     sync_enabled = get_config_value("sync_enabled", False) or get_config_value("arkiv_sync_enabled", False)
+    cleanup_enabled = get_config_value("cleanup_enabled", False)
     
     # Add steps based on configuration
     builder.with_analysis(enabled=vlm_enabled)
     builder.with_encryption(enabled=encryption_enabled)
     builder.with_upload() if upload_enabled else None  # Upload step is always added but can be skipped via context
     builder.with_sync(enabled=sync_enabled)
+    builder.with_cleanup(enabled=cleanup_enabled)
     
     return builder.build()

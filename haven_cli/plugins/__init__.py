@@ -7,7 +7,7 @@ Each plugin implements discover_sources() and archive() methods.
 from haven_cli.plugins.base import ArchiverPlugin, PluginCapability, PluginInfo
 from haven_cli.plugins.manager import PluginManager, get_plugin_manager
 from haven_cli.plugins.registry import PluginRegistry, get_registry
-from haven_cli.plugins.builtin import YouTubePlugin
+from haven_cli.plugins.builtin import YouTubePlugin, WebVideoPlugin
 
 __all__ = [
     "ArchiverPlugin",
@@ -18,4 +18,5 @@ __all__ = [
     "PluginRegistry",
     "get_registry",
     "YouTubePlugin",
+    "WebVideoPlugin",
 ]

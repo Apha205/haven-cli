@@ -107,7 +107,7 @@ class TestFiltersConfig:
     def test_default_values(self):
         """Test default filters configuration values."""
         config = FiltersConfig()
-        assert config.show_completed is False
+        assert config.show_completed is True
         assert config.show_failed is True
         assert config.plugin_filter == "all"
     
@@ -556,4 +556,4 @@ class TestConfigReset:
         # Verify defaults restored
         assert config.display.theme == "default"
         assert config.display.refresh_rate == 2.0
-        assert config.filters.show_completed is False
+        assert config.filters.show_completed is True

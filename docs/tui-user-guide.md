@@ -529,7 +529,7 @@ show_speed_graphs = true        # Show speed graph by default
 graph_history_seconds = 60      # Speed graph time window
 
 # Filter defaults
-show_completed = false          # Hide completed videos by default
+show_completed = true           # Show completed videos by default
 show_failed = true              # Show failed videos by default
 
 # Layout

@@ -377,7 +377,7 @@ class TestFilterState:
         assert fs.plugin is None
         assert fs.status is None
         assert fs.search_query == ""
-        assert fs.show_completed is False
+        assert fs.show_completed is True
         assert fs.show_failed is True
         assert fs.show_only_errors is False
     
@@ -406,11 +406,11 @@ class TestFilterState:
         
         assert fs.is_active() is True
     
-    def test_filter_state_is_active_show_completed(self):
-        """Test is_active when showing completed."""
+    def test_filter_state_is_active_hide_completed(self):
+        """Test is_active when hiding completed."""
         from haven_tui.models.video_view import FilterState
         
-        fs = FilterState(show_completed=True)
+        fs = FilterState(show_completed=False)
         
         assert fs.is_active() is True
     
@@ -436,7 +436,7 @@ class TestFilterState:
         
         assert fs.stage is None
         assert fs.search_query == ""
-        assert fs.show_completed is False
+        assert fs.show_completed is True
     
     def test_filter_state_to_dict(self):
         """Test filter state to_dict."""

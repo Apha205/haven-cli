@@ -650,7 +650,7 @@ show_speed_graphs = true        # Show graphs by default
 graph_history_seconds = 60      # Graph time window
 
 [tui.filters]
-show_completed = false          # Default filter for completed
+show_completed = true           # Default filter for completed
 show_failed = true              # Default filter for failed
 plugin_filter = "all"           # Default plugin filter
 

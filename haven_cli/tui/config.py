@@ -28,7 +28,7 @@ class TUIConfig:
     refresh_interval: float = 1.0
     max_history_points: int = 100
     theme: str = "dark"
-    show_completed: bool = False
+    show_completed: bool = True
     auto_scroll: bool = True
     log_level: str = "INFO"
     database_url: Optional[str] = None

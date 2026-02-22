@@ -73,7 +73,7 @@ class FilterState:
     plugin: Optional[str] = None
     status: Optional[StageStatus] = None
     search_query: str = ""
-    show_completed: bool = False
+    show_completed: bool = True
     show_failed: bool = True
     show_only_errors: bool = False
     
@@ -88,7 +88,7 @@ class FilterState:
             or self.plugin is not None
             or self.status is not None
             or self.search_query != ""
-            or self.show_completed  # True means show completed (non-default)
+            or not self.show_completed  # False means hide completed (non-default)
             or not self.show_failed  # False means hide failed (non-default)
             or self.show_only_errors
         )
@@ -99,7 +99,7 @@ class FilterState:
         self.plugin = None
         self.status = None
         self.search_query = ""
-        self.show_completed = False
+        self.show_completed = True
         self.show_failed = True
         self.show_only_errors = False
     
@@ -148,7 +148,7 @@ class FilterState:
             plugin=data.get("plugin"),
             status=status,
             search_query=data.get("search_query", ""),
-            show_completed=data.get("show_completed", False),
+            show_completed=data.get("show_completed", True),
             show_failed=data.get("show_failed", True),
             show_only_errors=data.get("show_only_errors", False),
         )

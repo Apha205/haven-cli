@@ -125,7 +125,7 @@ class FiltersConfig:
         plugin_filter: Filter by plugin ("all", "youtube", "bittorrent", etc.).
     """
     
-    show_completed: bool = False
+    show_completed: bool = True
     show_failed: bool = True
     plugin_filter: str = "all"
 

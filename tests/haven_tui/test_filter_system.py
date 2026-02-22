@@ -150,7 +150,7 @@ class TestFilterState:
         assert filt.plugin is None
         assert filt.status is None
         assert filt.search_query == ""
-        assert filt.show_completed is False
+        assert filt.show_completed is True
         assert filt.show_failed is True
         assert filt.show_only_errors is False
     
@@ -199,9 +199,9 @@ class TestFilterState:
         filt = FilterState(search_query="test")
         assert filt.is_active() is True
     
-    def test_is_active_with_show_completed(self):
-        """Test is_active returns True when show_completed is True."""
-        filt = FilterState(show_completed=True)
+    def test_is_active_with_hide_completed(self):
+        """Test is_active returns True when show_completed is False."""
+        filt = FilterState(show_completed=False)
         assert filt.is_active() is True
     
     def test_is_active_with_hide_failed(self):
@@ -232,7 +232,7 @@ class TestFilterState:
         assert filt.plugin is None
         assert filt.status is None
         assert filt.search_query == ""
-        assert filt.show_completed is False
+        assert filt.show_completed is True
         assert filt.show_failed is True
         assert filt.show_only_errors is False
     
@@ -250,7 +250,7 @@ class TestFilterState:
         assert data["status"] == "active"
         assert data["search_query"] == "test"
         assert data["plugin"] is None
-        assert data["show_completed"] is False
+        assert data["show_completed"] is True
         assert data["show_failed"] is True
         assert data["show_only_errors"] is False
     
@@ -322,8 +322,8 @@ class TestVideoListController:
         
         assert isinstance(result, FilterResult)
         assert result.total_count == 5
-        assert result.filtered_count == 4  # Excludes completed by default
-        assert len(result.videos) == 4
+        assert result.filtered_count == 5  # Includes completed by default
+        assert len(result.videos) == 5
     
     def test_get_filtered_videos_with_stage_filter(self, mock_state_manager):
         """Test filtering by stage."""
@@ -362,7 +362,7 @@ class TestVideoListController:
         
         result = controller.get_filtered_videos()
         
-        assert result.filtered_count == 3  # Excludes completed and failed
+        assert result.filtered_count == 4  # Excludes failed only (completed shown by default)
         assert not any(v.has_failed for v in result.videos)
     
     def test_get_filtered_videos_errors_only(self, mock_state_manager):
@@ -431,23 +431,23 @@ class TestVideoListController:
         assert controller.has_active_filters() is False
         assert controller.filter_state.stage is None
         assert controller.filter_state.search_query == ""
-        assert controller.filter_state.show_completed is False
+        assert controller.filter_state.show_completed is True
     
     def test_toggle_show_completed(self, mock_state_manager):
         """Test toggling show_completed."""
         controller = VideoListController(mock_state_manager)
         
-        assert controller.filter_state.show_completed is False
-        
-        result = controller.toggle_show_completed()
-        
-        assert result is True
         assert controller.filter_state.show_completed is True
         
         result = controller.toggle_show_completed()
         
         assert result is False
         assert controller.filter_state.show_completed is False
+        
+        result = controller.toggle_show_completed()
+        
+        assert result is True
+        assert controller.filter_state.show_completed is True
     
     def test_toggle_show_failed(self, mock_state_manager):
         """Test toggling show_failed."""
@@ -479,7 +479,7 @@ class TestVideoListController:
         
         descriptions = controller.get_active_filter_descriptions()
         
-        assert len(descriptions) == 3  # stage, search, hide_completed
+        assert len(descriptions) == 2  # stage, search (show_completed is default)
         assert any("stage=upload" in d for d in descriptions)
         assert any("search='video'" in d for d in descriptions)
     
@@ -627,14 +627,14 @@ class TestAcceptanceCriteria:
         """AC5: Quick filter toggle for completed works."""
         controller = VideoListController(mock_state_manager)
         
-        # Default: completed hidden
-        result = controller.get_filtered_videos()
-        assert not any(v.is_completed for v in result.videos)
-        
-        # Toggle on
-        controller.toggle_show_completed()
+        # Default: completed shown
         result = controller.get_filtered_videos()
         assert any(v.is_completed for v in result.videos)
+        
+        # Toggle off to hide
+        controller.toggle_show_completed()
+        result = controller.get_filtered_videos()
+        assert not any(v.is_completed for v in result.videos)
     
     def test_ac5_quick_filter_show_failed(self, mock_state_manager):
         """AC5: Quick filter toggle for failed works."""

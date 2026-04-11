@@ -19,7 +19,11 @@
     "@lit-protocol/types": "npm:@lit-protocol/types@8.0.4",
     "ethers": "npm:ethers@6.16.0",
     "viem": "npm:viem@2.45.1",
-    "filecoin-pin": "npm:filecoin-pin@0.16.0"
+    "filecoin-pin": "npm:filecoin-pin@0.16.0",
+    "@nucypher/taco": "npm:@nucypher/taco@0.7.0-alpha.12",
+    "@nucypher/taco-auth": "npm:@nucypher/taco-auth@0.4.0-alpha.12",
+    "@nucypher/nucypher-core": "npm:@nucypher/nucypher-core",
+    "ethers5": "npm:ethers@5.7.2"
   },
   "lint": {
     "rules": {

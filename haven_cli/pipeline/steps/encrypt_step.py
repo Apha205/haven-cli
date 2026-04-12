@@ -120,7 +120,12 @@ class EncryptStep(ConditionalStep):
         try:
             # Get access conditions from config or context
             access_conditions = self._get_access_conditions(context)
-            logger.info(f"Using access pattern: {context.options.get('access_pattern', 'owner_only')}")
+            access_pattern = context.options.get('access_pattern', 'owner_only')
+            provider = os.environ.get('ACCESS_CONTROL_PROVIDER', 'lit').upper()
+            logger.warning(
+                f"[ENCRYPT] ▶ Starting encryption | provider={provider} | "
+                f"pattern={access_pattern} | file={video_path}"
+            )
             
             # Encrypt via Lit Protocol with progress tracking
             # Uses _js_call_with_retry internally for resilience
@@ -128,6 +133,12 @@ class EncryptStep(ConditionalStep):
                 video_path,
                 access_conditions,
                 context,
+            )
+            
+            logger.warning(
+                f"[ENCRYPT] ✓ Encryption succeeded | "
+                f"hash={encryption_result.get('data_to_encrypt_hash', '') or encryption_result.get('key_hash', '')!r} | "
+                f"encrypted_path={encryption_result.get('ciphertext_path', '')!r}"
             )
             
             # Create encryption metadata
@@ -182,7 +193,10 @@ class EncryptStep(ConditionalStep):
             )
             
         except Exception as e:
-            logger.error(f"Encryption failed: {e}")
+            logger.warning(
+                f"[ENCRYPT] ✗ Encryption FAILED | provider={os.environ.get('ACCESS_CONTROL_PROVIDER', 'lit').upper()} | "
+                f"error={e}"
+            )
             
             # Mark job as failed
             error_msg = str(e)

@@ -41,12 +41,29 @@ declare const Deno: { env: { get(key: string): string | undefined } };
  * Reads HAVEN_ACCESS_CONTROL_PROVIDER env var (default: 'lit').
  */
 export async function createAccessControlProvider(): Promise<AccessControlProvider> {
-  const providerName = Deno.env.get('HAVEN_ACCESS_CONTROL_PROVIDER') ?? 'lit';
+  // Check both env var names (with and without HAVEN_ prefix)
+  const providerName = (
+    Deno.env.get('HAVEN_ACCESS_CONTROL_PROVIDER') ??
+    Deno.env.get('ACCESS_CONTROL_PROVIDER') ??
+    'lit'
+  ).toLowerCase();
 
+  // IMPORTANT: taco-wrapper.ts uses createRequire (Node.js CJS) and loads
+  // @nucypher/nucypher-core (native WASM) which is incompatible with Deno.
+  // When running under Deno (Synapse bridge), we must NEVER import taco-wrapper.ts.
+  // TACo operations are handled by taco-node.mjs running under Node.js instead.
   if (providerName === 'taco') {
-    const { createTacoProvider } = await import('./taco-wrapper.ts');
-    console.error(`[access-control] Using TACo provider`);
-    return createTacoProvider();
+    // Check if we're running under Deno — if so, skip TACo (handled by Node.js bridge)
+    // The Synapse bridge sets ACCESS_CONTROL_PROVIDER='' so this branch won't be reached.
+    // But as a safety net, check if createRequire is available (Node.js only).
+    try {
+      const { createTacoProvider } = await import('./taco-wrapper.ts');
+      console.error(`[access-control] Using TACo provider`);
+      return createTacoProvider();
+    } catch (e) {
+      console.error(`[access-control] TACo provider failed to load (Deno incompatibility): ${e}`);
+      console.error(`[access-control] Falling back to Lit Protocol`);
+    }
   }
 
   // Default: Lit Protocol

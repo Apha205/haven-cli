@@ -33,18 +33,41 @@ import type {
 } from './types.ts';
 import type { ProgressCallback } from './lit-wrapper.ts';
 
-// TACo SDK imports (bare specifiers resolved via deno.json import map)
-import {
-  initialize,
-  encrypt,
-  decrypt,
-  domains,
-  conditions,
-} from '@nucypher/taco';
-import { EIP4361AuthProvider } from '@nucypher/taco-auth';
-import { ThresholdMessageKit } from '@nucypher/nucypher-core';
-// Use ethers5 alias to avoid conflict with the ethers@6 used by Lit
-import { ethers } from 'ethers5';
+// Use createRequire to load TACo via CJS build.
+// The TACo alpha packages have broken ES module builds (bare directory imports
+// like `from './conditions'` that Deno's strict ESM resolver rejects).
+// The CJS build works correctly — createRequire forces Node.js CJS resolution.
+import { createRequire } from 'node:module';
+const _require = createRequire(import.meta.url);
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const tacoSdk: any = _require('@nucypher/taco');
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const tacoAuth: any = _require('@nucypher/taco-auth');
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const nucypherCore: any = _require('@nucypher/nucypher-core');
+// Load ethers using a require instance rooted at TACo's own package location.
+// This guarantees we get the SAME ethers instance that TACo uses internally,
+// so instanceof checks inside TACo pass correctly.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const tacoMainPath: string = _require.resolve('@nucypher/taco');
+const _requireFromTaco = createRequire(tacoMainPath);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const ethersLib: any = _requireFromTaco('ethers');
+
+// ethers v5 CJS exports: { ethers: { providers, Wallet, ... } } or flat
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const ethers: any = ethersLib.ethers ?? ethersLib;
+const JsonRpcProvider: any = ethers.providers?.JsonRpcProvider ?? ethers.JsonRpcProvider;
+const Wallet: any = ethers.Wallet ?? ethers.default?.Wallet;
+
+if (!JsonRpcProvider || !Wallet) {
+  throw new Error('[taco] Unsupported ethers module shape; expected JsonRpcProvider and Wallet exports');
+}
+
+const { initialize, encrypt, decrypt, domains, conditions } = tacoSdk;
+const { EIP4361AuthProvider } = tacoAuth;
+const { ThresholdMessageKit } = nucypherCore;
 
 // Deno type declaration
 declare const Deno: {
@@ -68,7 +91,7 @@ function getTacoConfig() {
   const domainName = Deno.env.get('TACO_DOMAIN') ?? 'lynx';
   const ritualId = parseInt(Deno.env.get('TACO_RITUAL_ID') ?? '27', 10);
   const rpcUrl = Deno.env.get('TACO_RPC_URL') ?? 'https://rpc-amoy.polygon.technology';
-  const nftContract = Deno.env.get('TACO_NFT_CONTRACT') ?? '';
+  const nftContract = Deno.env.get('TACO_NFT_CONTRACT') ?? Deno.env.get('TACO_NFT_CONTRACT_ADDRESS') ?? '';
   const chainId = parseInt(Deno.env.get('TACO_NFT_CHAIN_ID') ?? '11155111', 10);
   const tokenType = (Deno.env.get('TACO_TOKEN_TYPE') ?? 'ERC20') as 'ERC20' | 'ERC721';
 
@@ -118,8 +141,8 @@ async function tacoEncryptBytes(
   privateKey: string,
 ): Promise<Uint8Array> {
   await initialize();
-  const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
-  const wallet = new ethers.Wallet(privateKey, provider);
+  const provider = new JsonRpcProvider(rpcUrl);
+  const wallet = new Wallet(privateKey, provider);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const conditionObj = new ContractCondition(conditionProps as any);
   const messageKit = await encrypt(provider, tacoDomain, plaintext, conditionObj, ritualId, wallet);
@@ -133,8 +156,8 @@ async function tacoDecryptBytes(
   privateKey: string,
 ): Promise<Uint8Array> {
   await initialize();
-  const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
-  const wallet = new ethers.Wallet(privateKey, provider);
+  const provider = new JsonRpcProvider(rpcUrl);
+  const wallet = new Wallet(privateKey, provider);
   const messageKit = ThresholdMessageKit.fromBytes(messageKitBytes);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const conditionObj = new ContractCondition((messageKit as any).acp.conditions);

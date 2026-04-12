@@ -383,23 +383,61 @@ class JSRuntimeBridge:
     
     async def _spawn_process(self) -> None:
         """Spawn the JS runtime subprocess."""
+        import os
+        import shutil
         from .discovery import discover_runtime, get_runtime_args
         
-        # Discover runtime if not specified
-        runtime = self._config.runtime_executable
-        if not runtime:
-            runtime = await discover_runtime()
+        # Check if TACo provider is selected — use Node.js for TACo
+        # because @nucypher/nucypher-core uses native WASM with Node.js-specific
+        # internal APIs that Deno cannot emulate.
+        # IMPORTANT: check env_vars first (config may override os.environ).
+        # The Synapse bridge sets ACCESS_CONTROL_PROVIDER='' in env_vars to force Deno.
+        if 'ACCESS_CONTROL_PROVIDER' in self._config.env_vars:
+            access_control_provider = self._config.env_vars.get('ACCESS_CONTROL_PROVIDER', '')
+        else:
+            access_control_provider = os.environ.get('ACCESS_CONTROL_PROVIDER', '')
+        use_taco_node = access_control_provider.lower() == 'taco'
         
-        # Get the entry point script
+        # Get the services path
         services_path = self._config.services_path
         if not services_path:
-            # Default to js-services directory relative to this package
             services_path = Path(__file__).parent.parent.parent / "js-services"
         
-        entry_point = services_path / "main.ts"
-        
-        # Build command
-        args = get_runtime_args(runtime, entry_point, self._config.debug)
+        logger.warning(
+            f"[BRIDGE] _spawn_process: ACCESS_CONTROL_PROVIDER from env_vars={self._config.env_vars.get('ACCESS_CONTROL_PROVIDER', '<not set>')!r}, "
+            f"from os.environ={os.environ.get('ACCESS_CONTROL_PROVIDER', '<not set>')!r}, "
+            f"use_taco_node={use_taco_node}, "
+            f"runtime_executable={self._config.runtime_executable!r}"
+        )
+
+        # Determine which Node.js entry point to use
+        node_executable = shutil.which('node') or shutil.which('nodejs')
+
+        if use_taco_node:
+            # Use Node.js with taco-node.mjs for TACo provider
+            if not node_executable:
+                raise RuntimeError(
+                    "Node.js not found. TACo requires Node.js. "
+                    "Install from https://nodejs.org"
+                )
+            entry_point = services_path / "taco-node.mjs"
+            args = [node_executable, str(entry_point)]
+            logger.warning(f"[BRIDGE] Spawning Node.js for TACo: {node_executable} {entry_point}")
+        elif node_executable and (services_path / "synapse-node.mjs").exists():
+            # Use Node.js with synapse-node.mjs for Synapse/Filecoin upload.
+            # filecoin-pin also uses Node.js native modules incompatible with Deno.
+            entry_point = services_path / "synapse-node.mjs"
+            args = [node_executable, str(entry_point)]
+            logger.warning(f"[BRIDGE] Spawning Node.js for Synapse: {node_executable} {entry_point}")
+        else:
+            # Fallback: Deno with main.ts (Lit Protocol / legacy)
+            runtime = self._config.runtime_executable
+            if not runtime:
+                runtime = await discover_runtime()
+            
+            entry_point = services_path / "main.ts"
+            args = get_runtime_args(runtime, entry_point, self._config.debug)
+            logger.warning(f"[BRIDGE] Spawning Deno for Lit/legacy: {args[0]} {entry_point}")
         
         # Prepare environment - merge filtered vars with parent environment
         # This ensures the subprocess receives both the filtered HAVEN_*, FILECOIN_*, SYNAPSE_* vars

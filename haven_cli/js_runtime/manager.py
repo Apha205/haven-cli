@@ -49,6 +49,7 @@ class JSBridgeManager:
     """
     
     _instance: Optional['JSBridgeManager'] = None
+    _synapse_instance: Optional['JSBridgeManager'] = None  # Separate Deno bridge for Synapse
     _lock: Optional[asyncio.Lock] = None
     
     def __new__(cls) -> 'JSBridgeManager':
@@ -219,7 +220,28 @@ class JSBridgeManager:
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
-    
+
+    @classmethod
+    def get_synapse_instance(cls) -> 'JSBridgeManager':
+        """Get a separate singleton bridge manager for Synapse (Filecoin upload).
+
+        When ACCESS_CONTROL_PROVIDER=taco the main bridge runs Node.js (taco-node.mjs)
+        which does not implement Synapse methods.  This method returns a *separate*
+        manager that always spawns the Deno bridge (main.ts) so Synapse upload works
+        regardless of which access-control provider is selected.
+
+        Returns:
+            A JSBridgeManager instance dedicated to Synapse / Deno.
+        """
+        if cls._synapse_instance is None:
+            instance = cls.__new__(cls)
+            instance._initialized = False
+            instance.__init__()
+            # Pre-configure with a Deno-only config (ACCESS_CONTROL_PROVIDER cleared)
+            instance._synapse_mode = True
+            cls._synapse_instance = instance
+        return cls._synapse_instance
+
     @classmethod
     def reset_instance(cls) -> None:
         """Reset the singleton instance (mainly for testing).
@@ -264,7 +286,7 @@ class JSBridgeManager:
         env_vars = {}
         for key in os.environ:
             # Pass through all HAVEN_*, FILECOIN_*, SYNAPSE_* vars and other important vars
-            if key.startswith(('HAVEN_', 'FILECOIN_', 'SYNAPSE_')) or key in (
+            if key.startswith(('HAVEN_', 'FILECOIN_', 'SYNAPSE_', 'TACO_')) or key in (
                 'PATH', 'HOME', 'USER', 'DEBUG', 'LOG_LEVEL'
             ):
                 env_vars[key] = os.environ[key]
@@ -334,11 +356,36 @@ class JSBridgeManager:
         import os
         env_vars = {}
         for key in os.environ:
-            # Pass through all HAVEN_*, FILECOIN_*, SYNAPSE_* vars and other important vars
-            if key.startswith(('HAVEN_', 'FILECOIN_', 'SYNAPSE_')) or key in (
+            # Pass through all HAVEN_*, FILECOIN_*, SYNAPSE_*, TACO_* vars and other important vars
+            if key.startswith(('HAVEN_', 'FILECOIN_', 'SYNAPSE_', 'TACO_')) or key in (
                 'PATH', 'HOME', 'USER', 'DEBUG', 'LOG_LEVEL'
             ):
                 env_vars[key] = os.environ[key]
+
+        # Synapse mode: force Deno by clearing ACCESS_CONTROL_PROVIDER so bridge.py
+        # does NOT switch to taco-node.mjs.  Synapse (Filecoin upload) only works
+        # in the Deno runtime (main.ts).
+        synapse_mode = getattr(self, '_synapse_mode', False)
+        if synapse_mode:
+            # Clear both env var names so Deno's main.ts does NOT try to load taco-wrapper.ts
+            # (which uses @nucypher/nucypher-core WASM — incompatible with Deno).
+            env_vars['ACCESS_CONTROL_PROVIDER'] = ''
+            env_vars['HAVEN_ACCESS_CONTROL_PROVIDER'] = ''
+            logger.debug("Synapse bridge: forcing Deno+Lit runtime (ACCESS_CONTROL_PROVIDER cleared)")
+        
+        # Read runtime executable: env var takes priority, then Haven config
+        # For synapse mode, ignore HAVEN_JS_RUNTIME if it points to node
+        runtime_executable = None
+        if not synapse_mode:
+            runtime_executable = os.environ.get('HAVEN_JS_RUNTIME') or None
+        if not runtime_executable:
+            try:
+                from haven_cli.config import get_config
+                haven_config = get_config()
+                runtime_executable = getattr(haven_config.js_runtime, 'runtime_executable', None) \
+                    or getattr(haven_config.js_runtime, 'runtime', None)
+            except Exception:
+                pass
         
         return RuntimeConfig(
             services_path=services_path,
@@ -346,6 +393,7 @@ class JSBridgeManager:
             request_timeout=60.0,
             env_vars=env_vars,
             network_mode="testnet",
+            runtime_executable=runtime_executable,
         )
     
     def _start_health_checks(self) -> None:

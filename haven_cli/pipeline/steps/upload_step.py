@@ -572,7 +572,10 @@ class UploadStep(ConditionalStep):
         Returns:
             JSRuntimeBridge instance ready for Synapse SDK calls.
         """
-        return await JSBridgeManager.get_instance().get_bridge()
+        # Use the Synapse-specific bridge (always Deno/main.ts) so that
+        # Synapse upload works even when ACCESS_CONTROL_PROVIDER=taco
+        # (which routes the main bridge to Node.js/taco-node.mjs).
+        return await JSBridgeManager.get_synapse_instance().get_bridge()
     
     async def _js_call_with_retry(
         self,
@@ -600,7 +603,9 @@ class UploadStep(ConditionalStep):
         Raises:
             RuntimeError: If all retry attempts fail
         """
-        return await JSBridgeManager.get_instance().call_with_retry(
+        # Use the Synapse-specific bridge (always Deno/main.ts) so that
+        # Synapse upload works even when ACCESS_CONTROL_PROVIDER=taco.
+        return await JSBridgeManager.get_synapse_instance().call_with_retry(
             method, params, max_retries=max_retries, timeout=timeout
         )
     

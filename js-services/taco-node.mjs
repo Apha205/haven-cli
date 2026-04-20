@@ -85,11 +85,8 @@ function buildCondition(nftContract, chainId, tokenType) {
 }
 
 // ── TACo helpers ──────────────────────────────────────────────────────────────
-// Note: require('@nucypher/nucypher-core') above already initializes the WASM
-// synchronously at load time (Node.js CJS require is synchronous).
-// Do NOT call initialize() — it is designed for browser async loading and
-// calling it after require() corrupts the already-loaded WASM module
-// (__wbindgen_malloc becomes undefined on the second init attempt).
+// initialize() is called once at startup (bottom of this file, before readline).
+// Do NOT call it inside method handlers — double-init corrupts the WASM module.
 
 async function tacoEncryptBytes(plaintext, conditionProps, tacoDomain, ritualId, rpcUrl, privateKey) {
   const provider = new JsonRpcProvider(rpcUrl);
@@ -304,6 +301,18 @@ async function handleRequest(request) {
       sendError(id, -32603, message);
     }
   }
+}
+
+// ── Startup: initialize TACo WASM once before accepting requests ─────────────
+// initialize() from @nucypher/taco sets up the SDK's internal state and must
+// be called exactly once before encrypt/decrypt/ThresholdMessageKit are used.
+// Calling it inside method handlers causes double-init corruption.
+// Calling it here (top-level await in ESM) ensures it runs once at startup.
+try {
+  await initialize();
+  process.stderr.write('[taco-node] TACo WASM initialized\n');
+} catch (err) {
+  process.stderr.write(`[taco-node] WARNING: initialize() failed: ${err.message} — continuing anyway\n`);
 }
 
 // Signal ready

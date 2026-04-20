@@ -92,14 +92,20 @@ async function tacoEncryptBytes(plaintext, conditionProps, tacoDomain, ritualId,
   const provider = new JsonRpcProvider(rpcUrl);
   const wallet = new Wallet(privateKey, provider);
   const conditionObj = new ContractCondition(conditionProps);
-  const messageKit = await encrypt(provider, tacoDomain, plaintext, conditionObj, ritualId, wallet);
+  // wasm-bindgen requires a plain Uint8Array, not a Node.js Buffer
+  const plaintextBytes = plaintext instanceof Uint8Array && !(plaintext instanceof Buffer)
+    ? plaintext : new Uint8Array(plaintext);
+  const messageKit = await encrypt(provider, tacoDomain, plaintextBytes, conditionObj, ritualId, wallet);
   return messageKit.toBytes();
 }
 
 async function tacoDecryptBytes(messageKitBytes, tacoDomain, rpcUrl, privateKey) {
   const provider = new JsonRpcProvider(rpcUrl);
   const wallet = new Wallet(privateKey, provider);
-  const messageKit = ThresholdMessageKit.fromBytes(messageKitBytes);
+  // wasm-bindgen requires a plain Uint8Array, not a Node.js Buffer
+  const kitBytes = messageKitBytes instanceof Uint8Array && !(messageKitBytes instanceof Buffer)
+    ? messageKitBytes : new Uint8Array(messageKitBytes);
+  const messageKit = ThresholdMessageKit.fromBytes(kitBytes);
   const conditionObj = new ContractCondition(messageKit.acp.conditions);
   const conditionContext = new ConditionContext(conditionObj);
   const authProvider = new EIP4361AuthProvider(provider, wallet);

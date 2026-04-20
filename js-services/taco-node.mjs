@@ -86,8 +86,20 @@ function buildCondition(nftContract, chainId, tokenType) {
 
 // ── TACo helpers ──────────────────────────────────────────────────────────────
 
+// Guard: initialize() must only be called once — calling it twice corrupts
+// the wasm-bindgen internal module reference (__wbindgen_malloc becomes undefined).
+let _tacoInitialized = false;
+let _tacoInitPromise = null;
+
+async function ensureInitialized() {
+  if (_tacoInitialized) return;
+  if (_tacoInitPromise) return _tacoInitPromise;
+  _tacoInitPromise = initialize().then(() => { _tacoInitialized = true; });
+  return _tacoInitPromise;
+}
+
 async function tacoEncryptBytes(plaintext, conditionProps, tacoDomain, ritualId, rpcUrl, privateKey) {
-  await initialize();
+  await ensureInitialized();
   const provider = new JsonRpcProvider(rpcUrl);
   const wallet = new Wallet(privateKey, provider);
   const conditionObj = new ContractCondition(conditionProps);
@@ -96,7 +108,7 @@ async function tacoEncryptBytes(plaintext, conditionProps, tacoDomain, ritualId,
 }
 
 async function tacoDecryptBytes(messageKitBytes, tacoDomain, rpcUrl, privateKey) {
-  await initialize();
+  await ensureInitialized();
   const provider = new JsonRpcProvider(rpcUrl);
   const wallet = new Wallet(privateKey, provider);
   const messageKit = ThresholdMessageKit.fromBytes(messageKitBytes);
@@ -159,7 +171,7 @@ const methods = {
   }),
 
   'lit.connect': async (params) => {
-    await initialize();
+    await ensureInitialized();
     const cfg = getTacoConfig();
     connected = true;
     connectedDomain = cfg.resolvedDomain;

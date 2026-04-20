@@ -49,7 +49,13 @@ def download(
         False,
         "--decrypt",
         "-d",
-        help="Decrypt file after download using Lit Protocol.",
+        help="Decrypt file after download using TACo.",
+    ),
+    sidecar_cid: Optional[str] = typer.Option(
+        None,
+        "--sidecar-cid",
+        "-s",
+        help="CID of the TACo .meta.json sidecar (required for --decrypt).",
     ),
     config_file: Optional[Path] = typer.Option(
         None,
@@ -149,8 +155,30 @@ def download(
                     
                     progress.update(task, advance=50)
                 
-                # ── Step 2: Decrypt via TACo bridge (if requested) ───────────
+                # ── Step 2: Fetch sidecar if provided ────────────────────────
+                if decrypt and sidecar_cid:
+                    sidecar_path = Path(str(output) + ".meta.json")
+                    progress.update(task, description="Fetching TACo sidecar...")
+                    synapse_manager2 = JSBridgeManager.get_synapse_instance()
+                    async with synapse_manager2:
+                        await synapse_manager2.call_with_retry(
+                            JSRuntimeMethods.SYNAPSE_CONNECT, {}, max_retries=3,
+                        )
+                        await synapse_manager2.call_with_retry(
+                            JSRuntimeMethods.SYNAPSE_DOWNLOAD,
+                            {"cid": sidecar_cid.strip(), "outputPath": str(sidecar_path)},
+                            max_retries=3,
+                            timeout=300.0,
+                        )
+                    console.print(f"[dim]Sidecar fetched: {sidecar_path.name}[/dim]")
+
+                # ── Step 3: Decrypt via TACo bridge (if requested) ───────────
                 if decrypt:
+                    if not sidecar_cid:
+                        console.print(
+                            "[yellow]Warning: --sidecar-cid not provided. "
+                            "Decrypt will only work if .meta.json is already present.[/yellow]"
+                        )
                     progress.update(task, description="Decrypting with TACo...")
                     
                     await _decrypt_file_taco(output, output)

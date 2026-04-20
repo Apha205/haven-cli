@@ -726,11 +726,40 @@ class UploadStep(ConditionalStep):
         
         logger.info(f"Upload complete. CID: {result.get('cid', '')}")
         
+        # Upload TACo sidecar (.meta.json) if present — needed for decryption
+        # The sidecar contains the TACo MessageKit (encrypted symmetric key).
+        # It must be on IPFS so any authorized party can retrieve and decrypt.
+        sidecar_cid = ""
+        if encryption_metadata and encryption_metadata.ciphertext:
+            sidecar_path = encryption_metadata.ciphertext + ".meta.json"
+            if os.path.exists(sidecar_path):
+                logger.info(f"Uploading TACo sidecar to Filecoin: {sidecar_path}")
+                try:
+                    sidecar_result = await self._js_call_with_retry(
+                        "synapse.upload",
+                        {
+                            "filePath": sidecar_path,
+                            "metadata": {
+                                "type": "taco_sidecar",
+                                "parentCid": result["cid"],
+                            },
+                            "onProgress": False,
+                        },
+                        timeout=300.0,
+                        max_retries=1,
+                    )
+                    sidecar_cid = sidecar_result.get("cid", "")
+                    logger.info(f"TACo sidecar uploaded. CID: {sidecar_cid}")
+                except Exception as e:
+                    # Log but don't fail the upload — sidecar upload is best-effort
+                    logger.warning(f"TACo sidecar upload failed (decrypt will require manual sidecar): {e}")
+        
         return {
             "root_cid": result["cid"],
             "piece_cid": result.get("pieceCid", ""),
             "deal_id": result.get("dealId", ""),
             "transaction_hash": result.get("txHash", ""),
+            "sidecar_cid": sidecar_cid,
         }
     
     async def _upload_vlm_json(

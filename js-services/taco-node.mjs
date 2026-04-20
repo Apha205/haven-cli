@@ -85,21 +85,13 @@ function buildCondition(nftContract, chainId, tokenType) {
 }
 
 // ── TACo helpers ──────────────────────────────────────────────────────────────
-
-// Guard: initialize() must only be called once — calling it twice corrupts
-// the wasm-bindgen internal module reference (__wbindgen_malloc becomes undefined).
-let _tacoInitialized = false;
-let _tacoInitPromise = null;
-
-async function ensureInitialized() {
-  if (_tacoInitialized) return;
-  if (_tacoInitPromise) return _tacoInitPromise;
-  _tacoInitPromise = initialize().then(() => { _tacoInitialized = true; });
-  return _tacoInitPromise;
-}
+// Note: require('@nucypher/nucypher-core') above already initializes the WASM
+// synchronously at load time (Node.js CJS require is synchronous).
+// Do NOT call initialize() — it is designed for browser async loading and
+// calling it after require() corrupts the already-loaded WASM module
+// (__wbindgen_malloc becomes undefined on the second init attempt).
 
 async function tacoEncryptBytes(plaintext, conditionProps, tacoDomain, ritualId, rpcUrl, privateKey) {
-  await ensureInitialized();
   const provider = new JsonRpcProvider(rpcUrl);
   const wallet = new Wallet(privateKey, provider);
   const conditionObj = new ContractCondition(conditionProps);
@@ -108,7 +100,6 @@ async function tacoEncryptBytes(plaintext, conditionProps, tacoDomain, ritualId,
 }
 
 async function tacoDecryptBytes(messageKitBytes, tacoDomain, rpcUrl, privateKey) {
-  await ensureInitialized();
   const provider = new JsonRpcProvider(rpcUrl);
   const wallet = new Wallet(privateKey, provider);
   const messageKit = ThresholdMessageKit.fromBytes(messageKitBytes);
@@ -171,7 +162,8 @@ const methods = {
   }),
 
   'lit.connect': async (params) => {
-    await ensureInitialized();
+    // WASM already initialized by require('@nucypher/nucypher-core') at load time.
+    // Do NOT call initialize() here — it corrupts the already-loaded WASM module.
     const cfg = getTacoConfig();
     connected = true;
     connectedDomain = cfg.resolvedDomain;

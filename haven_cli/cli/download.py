@@ -202,7 +202,16 @@ async def _decrypt_file_taco(
     taco_manager = JSBridgeManager.get_instance()
 
     async with taco_manager:
-        # taco-node.mjs auto-connects on first use — no separate connect needed.
+        # Connect TACo bridge first — initializes domain/ritual config from env vars.
+        # This is TACo's connect (not Lit Protocol); it reads TACO_DOMAIN, TACO_RITUAL_ID.
+        await taco_manager.call_with_retry(
+            "lit.connect",
+            {},
+            max_retries=3,
+            timeout=60.0,
+        )
+
+        # Decrypt — taco-node.mjs reads the .meta.json sidecar automatically.
         # lit.decryptFile is the method name in taco-node.mjs (legacy name, TACo impl).
         await taco_manager.call_with_retry(
             "lit.decryptFile",

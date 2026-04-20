@@ -188,7 +188,7 @@ async function handleSynapseUpload(params, notifyProgress) {
     checkUploadReadiness({
       synapse,
       fileSize: carBytes.length,
-      autoConfigureAllowances: true,
+       autoConfigureAllowances: true,
     }),
     600000
   );
@@ -312,6 +312,64 @@ async function handleSynapseUpload(params, notifyProgress) {
   };
 }
 
+async function handleSynapseDownload(params) {
+  if (!_isConnected) {
+    throw new Error('Synapse not connected. Call synapse.connect first.');
+  }
+
+  const { cid, outputPath } = params;
+  if (!cid) throw new Error('Missing required parameter: cid');
+  if (!outputPath) throw new Error('Missing required parameter: outputPath');
+
+  const { writeFile, mkdir } = await import('node:fs/promises');
+  const { dirname } = await import('node:path');
+
+  // Ensure output directory exists
+  await mkdir(dirname(outputPath), { recursive: true });
+
+  // Try IPFS gateways in order
+  const gateways = [
+    `https://ipfs.io/ipfs/${cid}`,
+    `https://dweb.link/ipfs/${cid}`,
+    `https://cloudflare-ipfs.com/ipfs/${cid}`,
+    `https://gateway.pinata.cloud/ipfs/${cid}`,
+  ];
+
+  process.stderr.write(`[synapse-node] Downloading CID: ${cid} → ${outputPath}\n`);
+
+  let lastError = null;
+  for (const url of gateways) {
+    try {
+      process.stderr.write(`[synapse-node] Trying gateway: ${url}\n`);
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(120000), // 2 min per gateway
+      });
+
+      if (!response.ok) {
+        process.stderr.write(`[synapse-node] Gateway returned ${response.status}: ${url}\n`);
+        lastError = new Error(`HTTP ${response.status} from ${url}`);
+        continue;
+      }
+
+      const buffer = Buffer.from(await response.arrayBuffer());
+      await writeFile(outputPath, buffer);
+
+      process.stderr.write(`[synapse-node] Download complete: ${buffer.length} bytes → ${outputPath}\n`);
+      return {
+        cid,
+        outputPath,
+        size: buffer.length,
+        downloadedAt: new Date().toISOString(),
+      };
+    } catch (err) {
+      process.stderr.write(`[synapse-node] Gateway failed (${url}): ${err.message}\n`);
+      lastError = err;
+    }
+  }
+
+  throw new Error(`Failed to download CID ${cid} from all gateways. Last error: ${lastError?.message}`);
+}
+
 async function handleSynapseGetStatus(params) {
   const cid = params.cid ?? '';
   return {
@@ -373,6 +431,8 @@ async function handleRequest(line) {
         result = await handleSynapseUpload(params ?? {}, notifyProgress);
         break;
       }
+      case 'synapse.download':
+        result = await handleSynapseDownload(params ?? {}); break;
       case 'synapse.getStatus':
         result = await handleSynapseGetStatus(params ?? {}); break;
       case 'synapse.disconnect':

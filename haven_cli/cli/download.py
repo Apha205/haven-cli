@@ -119,55 +119,53 @@ def download(
             task = progress.add_task("Downloading...", total=100)
             
             try:
-                # Use bridge manager for singleton access with retry
-                manager = JSBridgeManager.get_instance()
+                # ── Step 1: Download via Synapse bridge ──────────────────────
+                # Use the dedicated Synapse bridge (synapse-node.mjs) which
+                # handles synapse.* methods. The TACo bridge only handles taco.*
+                synapse_manager = JSBridgeManager.get_synapse_instance()
                 
-                async with manager:
-                    # Connect to Synapse (uses FILECOIN_RPC_URL and HAVEN_PRIVATE_KEY env vars)
+                async with synapse_manager:
+                    # Connect to Synapse
                     progress.update(task, description="Connecting to Synapse...")
                     
-                    await js_call(
+                    await synapse_manager.call_with_retry(
                         JSRuntimeMethods.SYNAPSE_CONNECT,
                         {},
                         max_retries=3,
                     )
                     
-                    # Download file from Filecoin
+                    # Download file from Filecoin via IPFS gateway
                     progress.update(task, description="Fetching from Filecoin...", advance=10)
                     
-                    result = await js_call(
+                    await synapse_manager.call_with_retry(
                         JSRuntimeMethods.SYNAPSE_DOWNLOAD,
                         {
                             "cid": cid,
                             "outputPath": str(output),
                         },
                         max_retries=3,
+                        timeout=600.0,  # 10 min — IPFS gateways can be slow
                     )
                     
                     progress.update(task, advance=50)
+                
+                # ── Step 2: Decrypt via TACo bridge (if requested) ───────────
+                if decrypt:
+                    progress.update(task, description="Decrypting with TACo...")
                     
-                    # Decrypt if requested
-                    if decrypt:
-                        progress.update(task, description="Decrypting with Lit Protocol...")
-                        
-                        await _decrypt_file(
-                            output,
-                            output,
-                            cid,
-                            config.blockchain.get_lit_network(),
-                        )
-                        
-                        progress.update(task, description="Decryption complete")
+                    await _decrypt_file_taco(output, output)
                     
-                    progress.update(task, advance=40)
-                    
-                    console.print(f"[green]✓[/green] Download complete: {output}")
-                    
-                    # Show file info
-                    file_size = output.stat().st_size if output.exists() else 0
-                    if file_size > 0:
-                        size_str = _format_file_size(file_size)
-                        console.print(f"[dim]File size: {size_str}[/dim]")
+                    progress.update(task, description="Decryption complete")
+                
+                progress.update(task, advance=40)
+                
+                console.print(f"[green]✓[/green] Download complete: {output}")
+                
+                # Show file info
+                file_size = output.stat().st_size if output.exists() else 0
+                if file_size > 0:
+                    size_str = _format_file_size(file_size)
+                    console.print(f"[dim]File size: {size_str}[/dim]")
                     
             except Exception as e:
                 console.print(f"[red]✗[/red] Download failed: {e}")
@@ -185,68 +183,36 @@ def download(
     asyncio.run(run_download())
 
 
-async def _decrypt_file(
+async def _decrypt_file_taco(
     input_path: Path,
     output_path: Path,
-    cid: str,
-    lit_network: str,
 ) -> None:
-    """Decrypt a file using Lit Protocol.
-    
+    """Decrypt a file using TACo threshold encryption.
+
+    Uses the TACo bridge (taco-node.mjs). The encrypted file must have a
+    companion .meta.json sidecar written by taco-node.mjs during encryption.
+
     Args:
-        input_path: Path to the encrypted file
+        input_path: Path to the encrypted file (e.g. file.txt.encrypted)
         output_path: Path to write the decrypted file
-        cid: Content ID for metadata lookup
-        lit_network: Lit Protocol network to use
-        
+
     Raises:
-        ValueError: If encryption metadata is not found
         RuntimeError: If decryption fails
     """
-    # Load encryption metadata
-    metadata = await load_encryption_metadata_by_cid(cid)
-    
-    if not metadata:
-        # Try sidecar file
-        metadata = await load_encryption_metadata(input_path)
-    
-    if not metadata:
-        raise ValueError(
-            f"No encryption metadata found for CID {cid}. "
-            "Ensure the file was encrypted during upload or provide a sidecar .lit file."
+    taco_manager = JSBridgeManager.get_instance()
+
+    async with taco_manager:
+        # taco-node.mjs auto-connects on first use — no separate connect needed.
+        # lit.decryptFile is the method name in taco-node.mjs (legacy name, TACo impl).
+        await taco_manager.call_with_retry(
+            "lit.decryptFile",
+            {
+                "encryptedFilePath": str(input_path),
+                "outputPath": str(output_path),
+            },
+            max_retries=3,
+            timeout=120.0,
         )
-    
-    # Connect to Lit Protocol
-    await js_call(
-        JSRuntimeMethods.LIT_CONNECT,
-        {"network": lit_network},
-        max_retries=3,
-    )
-    
-    # Read encrypted file content
-    encrypted_data = input_path.read_bytes()
-    
-    # Decrypt via Lit Protocol
-    decrypt_result = await js_call(
-        JSRuntimeMethods.LIT_DECRYPT,
-        {
-            "ciphertext": metadata.ciphertext or base64.b64encode(encrypted_data).decode(),
-            "dataToEncryptHash": metadata.data_to_encrypt_hash,
-            "accessControlConditions": metadata.access_control_conditions,
-            "chain": metadata.chain,
-        },
-        max_retries=3,
-    )
-    
-    # Write decrypted data
-    if isinstance(decrypt_result, dict) and "decryptedData" in decrypt_result:
-        decrypted_data = base64.b64decode(decrypt_result["decryptedData"])
-    elif isinstance(decrypt_result, str):
-        decrypted_data = base64.b64decode(decrypt_result)
-    else:
-        raise RuntimeError(f"Unexpected decryption result format: {type(decrypt_result)}")
-    
-    output_path.write_bytes(decrypted_data)
 
 
 def _format_file_size(size_bytes: int) -> str:

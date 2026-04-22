@@ -21,6 +21,10 @@ import { createRequire } from 'node:module';
 import { createInterface } from 'node:readline';
 import { readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Use createRequire to load CJS packages
 const require = createRequire(import.meta.url);
@@ -28,11 +32,13 @@ const require = createRequire(import.meta.url);
 // Load TACo SDK (CJS build — no directory import issues)
 const tacoSdk = require('@nucypher/taco');
 const tacoAuth = require('@nucypher/taco-auth');
-const nucypherCore = require('@nucypher/nucypher-core');
 
-// Load ethers v5 from TACo's own dependency tree to ensure same instance
+// Load nucypher-core from taco's own dependency tree
 const tacoMainPath = require.resolve('@nucypher/taco');
 const requireFromTaco = createRequire(tacoMainPath);
+const nucypherCore = requireFromTaco('@nucypher/nucypher-core');
+
+// Load ethers v5 from TACo's own dependency tree to ensure same instance
 const ethersLib = requireFromTaco('ethers');
 const ethers = ethersLib.ethers ?? ethersLib;
 const { JsonRpcProvider, Wallet } = ethers.providers
@@ -309,16 +315,16 @@ async function handleRequest(request) {
   }
 }
 
-// ── Startup: initialize TACo WASM once before accepting requests ─────────────
-// initialize() from @nucypher/taco sets up the SDK's internal state and must
-// be called exactly once before encrypt/decrypt/ThresholdMessageKit are used.
-// Calling it inside method handlers causes double-init corruption.
-// Calling it here (top-level await in ESM) ensures it runs once at startup.
-try {
-  await initialize();
+// ── Startup: initialize TACo WASM via initSync ───────────────────────────────
+// initialize() calls __wbg_init (browser/async path) which conflicts with the
+// Node.js CJS WASM build. Use initSync() with the raw .wasm binary instead.
+// nucypher-core is loaded from taco's own node_modules to ensure a single
+// module instance shared by @nucypher/taco and @nucypher/shared.
+{
+  const ncPath = requireFromTaco.resolve('@nucypher/nucypher-core');
+  const wasmPath = join(dirname(ncPath), '..', 'nucypher_core_wasm_bg.wasm');
+  nucypherCore.initSync(await readFile(wasmPath));
   process.stderr.write('[taco-node] TACo WASM initialized\n');
-} catch (err) {
-  process.stderr.write(`[taco-node] WARNING: initialize() failed: ${err.message} — continuing anyway\n`);
 }
 
 // Signal ready

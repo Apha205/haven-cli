@@ -520,6 +520,7 @@ class UploadStep(ConditionalStep):
                 "piece_cid": result.piece_cid,
                 "transaction_hash": result.transaction_hash,
                 "vlm_json_cid": result.vlm_json_cid,
+                "sidecar_cid": upload_result.get("sidecar_cid", ""),
             })
             
             return StepResult.ok(
@@ -529,6 +530,7 @@ class UploadStep(ConditionalStep):
                 transaction_hash=result.transaction_hash,
                 vlm_json_cid=result.vlm_json_cid,
                 cid=result.root_cid,  # Alias for convenience
+                sidecar_cid=upload_result.get("sidecar_cid", ""),
             )
             
         except Exception as e:

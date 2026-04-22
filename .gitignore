@@ -12,5 +12,28 @@ venv/
 .env/
 env/
 
+# Environment / secrets
+.env
+.env.local
+
 # JS Services
+js-services/node_modules/
 js-services/deno.lock
+
+# Debug/diagnostic scripts (created during development)
+js-services/check-*.mjs
+js-services/test-fromBytes.mjs
+
+# TACo test artifacts
+*.encrypted
+*.encrypted.meta.json
+*.decrypted
+taco-test.txt.*
+
+# Logs
+logs/
+*.log
+
+# Coverage
+.coverage
+htmlcov/
